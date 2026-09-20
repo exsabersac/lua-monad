@@ -235,6 +235,13 @@ lua-monad/
   README.md
 ```
 
+## 深入阅读
+
+- [CPS 设计与工作原理](docs/CPS设计与原理.md) — Cont、callCC、定界续延、CPS 协程三层模型
+- [设计说明](docs/设计说明.md) — 总架构与 makeMonad
+- [do 语法](docs/do语法.md) — `@mdo` 预处理器
+- [API 参考](docs/API.md)
+
 ## 许可
 
 教学示例，随意使用。
