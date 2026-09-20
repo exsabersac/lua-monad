@@ -1,5 +1,5 @@
 #!/usr/bin/env lua
--- tests/run.lua — 单子定律 + 符号糖 + Cont CPS 协程断言
+-- tests/run.lua — 单子定律 + 符号糖 + Cont CPS 协程 + mdo 断言
 --
 -- 对每个 monad 检查三条定律（在样本上）：
 --   左单位：  unit(a) >>= f      ≡  f(a)
@@ -331,6 +331,121 @@ do
   local yields, fin = Coro.collect(gen)
   assert_eq(yields, { 1, 2, 3 }, "coro collect yields")
   assert_eq(fin, "ok", "coro collect final")
+end
+
+
+------------------------------------------------------------
+-- mdo：expand / preprocess + 示例执行（foo、walk routine）
+------------------------------------------------------------
+do
+  local mdo = require("mdo")
+
+  -- expand：绑定嵌套
+  local body = [[
+  x <- Maybe.Just(3)
+  y <- Maybe.Just("!")
+  Maybe.Just(tostring(x) .. y)
+]]
+  local exp = mdo.expand(body, "Maybe")
+  assert_true(exp:find(">> function%(x%)", 1, false) ~= nil, "mdo expand has >> function(x)")
+  assert_true(exp:find(">> function%(y%)", 1, false) ~= nil, "mdo expand has >> function(y)")
+
+  -- expand：中间裸表达式 → ..
+  local body2 = [[
+  Maybe.Just(1)
+  x <- Maybe.Just(2)
+  Maybe.Just(x)
+]]
+  local exp2 = mdo.expand(body2, "Maybe")
+  assert_true(exp2:find("%.%.", 1, false) ~= nil, "mdo expand bare middle uses ..")
+
+  -- expand：let
+  local body3 = [[
+  x <- Maybe.Just(10)
+  let y = x + 1
+  Maybe.Just(y)
+]]
+  local exp3 = mdo.expand(body3, "Maybe")
+  local fn, err = load("local Maybe = require('maybe'); return " .. exp3, "mdo-let")
+  assert_true(fn ~= nil, "mdo let expand loadable" .. (fn and "" or (": " .. tostring(err))))
+  local rlet = fn()
+  assert_eq(rlet, Maybe.Just(11), "mdo let result Just(11)")
+
+  -- 非法：空块
+  local ok_empty, err_empty = pcall(mdo.expand, "\n-- only comment\n", "Maybe")
+  assert_true(not ok_empty, "mdo empty block errors")
+
+  -- 非法：末行绑定
+  local ok_tail, err_tail = pcall(mdo.expand, "x <- Maybe.Just(1)\n", "Maybe")
+  assert_true(not ok_tail, "mdo trailing bind errors")
+
+  -- preprocess + 执行 do_maybe_foo / walk（load 需去掉 shebang）
+  local function readfile(path)
+    local f = assert(io.open(path, "r"))
+    local s = f:read("*a")
+    f:close()
+    return s
+  end
+  local function strip_shebang(s)
+    if s:sub(1, 2) == "#!" then
+      local nl = s:find("\n", 1, true)
+      if nl then return s:sub(nl + 1) end
+    end
+    return s
+  end
+  local foo_src = strip_shebang(mdo.preprocess(readfile("examples/do_maybe_foo.mdo")))
+  local foo_fn, foo_err = load(foo_src, "do_maybe_foo")
+  assert_true(foo_fn ~= nil, "preprocess foo loadable" .. (foo_fn and "" or (": " .. tostring(foo_err))))
+  if foo_fn then foo_fn() end
+
+  local walk_src = strip_shebang(mdo.preprocess(readfile("examples/do_walk_the_line.mdo")))
+  local walk_fn, walk_err = load(walk_src, "do_walk_the_line")
+  assert_true(walk_fn ~= nil, "preprocess walk loadable" .. (walk_fn and "" or (": " .. tostring(walk_err))))
+  if walk_fn then walk_fn() end
+
+  -- 直接求值 foo 表达式
+  local foo_only = mdo.expand([[
+  x <- Maybe.Just(3)
+  y <- Maybe.Just("!")
+  Maybe.Just(tostring(x) .. y)
+]], "Maybe")
+  local foo2 = assert(load("local Maybe=require('maybe'); return " .. foo_only))()
+  assert_eq(foo2, Maybe.Just("3!"), "mdo foo => Just \"3!\"")
+
+  -- walk routine 表达式
+  local walk_body = [[
+  start <- Maybe.Just({ 0, 0 })
+  first <- landLeft(2)(start)
+  second <- landRight(2)(first)
+  landLeft(1)(second)
+]]
+  local walk_exp = mdo.expand(walk_body, "Maybe")
+  local walk_chunk = [[
+local Maybe = require("maybe")
+local function landLeft(n)
+  return function(pole)
+    local left, right = pole[1], pole[2]
+    if math.abs((left + n) - right) < 4 then
+      return Maybe.Just({ left + n, right })
+    else
+      return Maybe.Nothing()
+    end
+  end
+end
+local function landRight(n)
+  return function(pole)
+    local left, right = pole[1], pole[2]
+    if math.abs(left - (right + n)) < 4 then
+      return Maybe.Just({ left, right + n })
+    else
+      return Maybe.Nothing()
+    end
+  end
+end
+return ]] .. walk_exp
+  local wr = assert(load(walk_chunk, "walk-routine"))()
+  assert_true(Maybe.isJust(wr) and wr.value[1] == 3 and wr.value[2] == 2,
+              "mdo walk routine Just (3,2)")
 end
 
 ------------------------------------------------------------

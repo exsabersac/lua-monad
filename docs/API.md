@@ -136,3 +136,16 @@ end
 ```
 
 驱动助手：`Coro.run` / `Coro.collect`（见 `examples/coro_generator.lua`、`examples/coro_interactive.lua`）。
+
+---
+
+## `mdo` — `src/mdo.lua`（do-notation 预处理）
+
+将 `@mdo MONAD … @end` 展开为 `>>` / `..` 嵌套。详见 [`do语法.md`](do语法.md)。
+
+| 函数 | 说明 |
+|------|------|
+| `expand(body_src, monad[, base_line])` | 展开 do 正文 → Lua 表达式字符串；`monad` 为上下文名 |
+| `preprocess(file_src)` | 替换源码中全部 `@mdo` 块，返回完整 Lua 源 |
+
+CLI：`lua tools/mdo.lua INPUT.mdo [-o OUTPUT.lua]`（默认同路径 `.lua`）。

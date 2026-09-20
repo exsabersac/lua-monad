@@ -4,7 +4,7 @@
 
 面向教学与对照阅读：值形态、定律测试、以及 LYAH「走钢丝」示例均可在本仓库直接跑通。
 
-更细的设计说明见 [`docs/设计说明.md`](docs/设计说明.md)；API 一览见 [`docs/API.md`](docs/API.md)。
+更细的设计说明见 [`docs/设计说明.md`](docs/设计说明.md)；API 一览见 [`docs/API.md`](docs/API.md)；do 语法见 [`docs/do语法.md`](docs/do语法.md)。
 
 ## `m` 在 Lua 里是什么？
 
@@ -134,6 +134,26 @@ API：
 
 生成器 / 交互示例：`examples/coro_generator.lua`、`examples/coro_interactive.lua`。
 
+## do-notation（`@mdo` 预处理）
+
+长 `>> function(x) return … end` 链可用类 Haskell 的 do 语法书写，由预处理器变成真正的 Lua：
+
+```
+local foo = @mdo Maybe
+  x <- Maybe.Just(3)
+  y <- Maybe.Just("!")
+  Maybe.Just(tostring(x) .. y)
+@end
+```
+
+```bash
+lua tools/mdo.lua examples/do_maybe_foo.mdo   # 生成 .lua
+lua examples/do_maybe_foo.lua
+lua examples/do_walk_the_line.lua             # routine → Just (3,2)
+```
+
+语法规则、限制与 API 见 [`docs/do语法.md`](docs/do语法.md)。库：`src/mdo.lua`；CLI：`tools/mdo.lua`。
+
 ## Walk the line（LYAH）
 
 [`examples/walk_the_line.lua`](examples/walk_the_line.lua) 对照 *Learn You a Haskell*「A Fistful of Monads」中 Pierre 走钢丝：
@@ -161,6 +181,11 @@ lua examples/demo.lua
 
 # LYAH Walk the line（Maybe 走钢丝）
 lua examples/walk_the_line.lua
+
+# do-notation：先预处理 .mdo（若已提交生成物可直接跑 .lua）
+lua tools/mdo.lua examples/do_maybe_foo.mdo
+lua examples/do_maybe_foo.lua
+lua examples/do_walk_the_line.lua
 
 # Cont / CPS 协程示例
 lua examples/cont_callcc.lua

@@ -1,0 +1,24 @@
+#!/usr/bin/env lua
+-- do_maybe_foo.mdo — LYAH「foo」：Just 3 与 Just "!" 拼成 "3!"
+-- 编辑本文件后运行：lua tools/mdo.lua examples/do_maybe_foo.mdo
+-- 生成 examples/do_maybe_foo.lua 后再：lua examples/do_maybe_foo.lua
+
+package.path = "src/?.lua;" .. package.path
+
+local Maybe = require("maybe")
+
+-- 对照 Haskell：
+--   foo = do
+--     x <- Just 3
+--     y <- Just "!"
+--     Just (show x ++ y)
+
+local foo = @mdo Maybe
+  x <- Maybe.Just(3)
+  y <- Maybe.Just("!")
+  Maybe.Just(tostring(x) .. y)
+@end
+
+assert(Maybe.isJust(foo), "foo should be Just")
+assert(foo.value == "3!", "foo value")
+print('foo => Just "' .. foo.value .. '"')
