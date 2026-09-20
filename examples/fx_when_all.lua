@@ -16,12 +16,13 @@ local print, assert, tostring = print, assert, tostring
 -- 1. 两路 wait(0.05)：并行 wall clock 应明显小于串行 0.10
 ------------------------------------------------------------
 print("=== when_all：两路 wait(0.05) 并行 ===")
-local t0 = os.clock()
+local sched = require("fx_sched")
+local t0 = sched.now()
 local r1 = fx.run_all({
   fx.wait(0.05),
   fx.wait(0.05),
 }, nil, { verbose_wait = true })
-local elapsed = os.clock() - t0
+local elapsed = sched.now() - t0
 assert(r1.ok, "run_all should succeed")
 assert(type(r1.values) == "table" and #r1.values == 2)
 assert(r1.values[1] == true and r1.values[2] == true)
@@ -52,9 +53,9 @@ local instant = {
     return { ok = true, target = req.target }
   end,
 }
-local t1 = os.clock()
+local t1 = sched.now()
 local r2 = fx.run(bundle, instant, { verbose_wait = true })
-local e2 = os.clock() - t1
+local e2 = sched.now() - t1
 assert(r2.ok)
 local vals = r2.value
 assert(vals[1].host == "a")

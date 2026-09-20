@@ -1273,12 +1273,14 @@ do
   assert_true(r_fail.failed and r_fail.error == "boom", "when_all Failed aborts")
   assert_eq(r_fail.index, 2, "when_all Failed index")
 
-  -- 并行 wait wall clock（宽松）
-  local t0 = os.clock()
+  -- 并行 wait wall clock（宽松；用 fx_sched.now，勿用 os.clock）
+  local sched = require("fx_sched")
+  local t0 = sched.now()
   local r_par = fx.run_all({ fx.wait(0.04), fx.wait(0.04) }, nil)
-  local elapsed = os.clock() - t0
+  local elapsed = sched.now() - t0
   assert_true(r_par.ok, "parallel wait ok")
   assert_true(elapsed < 0.075, "parallel wait wall < 0.075 got " .. tostring(elapsed))
+  assert_true(elapsed >= 0.035, "parallel wait wall >= 0.035 got " .. tostring(elapsed))
 end
 
 ------------------------------------------------------------

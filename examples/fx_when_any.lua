@@ -6,20 +6,22 @@ package.path = "src/?.lua;" .. package.path
 
 local Cont = require("cont")
 local fx = require("fx")
+local sched = require("fx_sched")
 local print, assert, tostring = print, assert, tostring
 
 print("=== when_any：0.03 vs 0.08，短者胜出 ===")
-local t0 = os.clock()
+local t0 = sched.now()
 local r = fx.run_any({
   fx.wait(0.08) >> function(_) return Cont.unit("slow") end,
   fx.wait(0.03) >> function(_) return Cont.unit("fast") end,
 }, nil, { verbose_wait = true })
-local elapsed = os.clock() - t0
+local elapsed = sched.now() - t0
 assert(r.ok, "run_any should succeed")
 assert(r.index == 2, "winner should be task #2")
 assert(r.value == "fast")
 print(string.format("  winner index=%d value=%s elapsed=%.3fs", r.index, tostring(r.value), elapsed))
 assert(elapsed < 0.06, "should finish near the shorter wait")
+assert(elapsed >= 0.02, "should still wait roughly the shorter delay")
 
 print("\n=== fx.when_any Cont 组合子 ===")
 local race = fx.when_any({

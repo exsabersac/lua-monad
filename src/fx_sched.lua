@@ -12,8 +12,46 @@ local Coro = require("coro")
 
 local M = {}
 
+-- 墙钟时间：并行 wait 的 deadline / sleep 必须一致。
+-- os.clock 是 CPU 时间，sleep 期间几乎不推进，会导致「强制唤醒」后二次 sleep（看起来像串行）。
+local _virt = 0
+
+local function probe_wall()
+  local ok, socket = pcall(require, "socket")
+  if ok and type(socket) == "table" and type(socket.gettime) == "function" then
+    return socket.gettime()
+  end
+  local f = io.popen("date +%s.%N 2>/dev/null")
+  if f then
+    local s = f:read("*a")
+    f:close()
+    local n = tonumber(s)
+    if n then
+      return n
+    end
+  end
+  f = io.popen("python3 -c 'import time; print(time.time())' 2>/dev/null")
+  if f then
+    local s = f:read("*a")
+    f:close()
+    local n = tonumber(s)
+    if n then
+      return n
+    end
+  end
+  return nil
+end
+
+local function wall_now()
+  local w = probe_wall()
+  if w then
+    return w
+  end
+  return _virt
+end
+
 local function now()
-  return os.clock()
+  return wall_now()
 end
 
 local function busy_wait(seconds)
@@ -23,11 +61,14 @@ local function busy_wait(seconds)
   local ok, socket = pcall(require, "socket")
   if ok and type(socket) == "table" and type(socket.sleep) == "function" then
     socket.sleep(seconds)
+  elseif package.config:sub(1, 1) == "/" then
+    os.execute(string.format("sleep %.3f", seconds))
+  else
+    _virt = _virt + seconds
     return
   end
-  local t0 = os.clock()
-  while os.clock() - t0 < seconds do
-    -- 合作式忙等：教学演示用
+  if not probe_wall() then
+    _virt = _virt + seconds
   end
 end
 
