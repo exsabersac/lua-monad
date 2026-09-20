@@ -155,10 +155,11 @@ local value = result.value  -- fx.run 返回结构化结果表
 **并行（对齐 C# `Task.WhenAll` / `WhenAny`）**：`fx.when_all` / `fx.when_any`（Cont 组合子）与 `fx.run_all` / `fx.run_any`（顶层驱动）。  
 **Fork/Join（对齐 `Task.Run` + `await`）**：`fx.fork` / `fx.join` / `fx.join_handles` — 非结构化：早启动、中间可做别的事、稍后再汇合。  
 **有限并发**：`fx.map_parallel(items, worker, {concurrency=N})` — 滑动窗口池，结果按输入顺序。  
+**超时**：`fx.with_timeout(ma, seconds)` — 竞速 deadline；超时 → `Failed("timeout")`。  
 wait / fork 子任务由 [`src/fx_sched.lua`](src/fx_sched.lua) nursery + 时间轮并发。C# 对照表见 [异步效果同步写法](docs/异步效果同步写法.md)。
 
 文档：[异步效果同步写法](docs/异步效果同步写法.md)。  
-示例：`fx_wait_click_flow.lua` · `fx_custom_handlers.lua` · `fx_with_attrs.lua` · `fx_stop_cancel.lua` · `fx_fail_catch.lua` · `fx_when_all.lua` · `fx_when_any.lua` · `fx_parallel_pipeline.lua` · `fx_fork_join.lua` · `fx_map_parallel.lua` · `cont_catch_throw.lua`。
+示例：`fx_wait_click_flow.lua` · `fx_custom_handlers.lua` · `fx_with_attrs.lua` · `fx_stop_cancel.lua` · `fx_fail_catch.lua` · `fx_when_all.lua` · `fx_when_any.lua` · `fx_parallel_pipeline.lua` · `fx_fork_join.lua` · `fx_map_parallel.lua` · `fx_with_timeout.lua` · `cont_catch_throw.lua`。
 
 ---
 
@@ -192,6 +193,7 @@ lua examples/fx_when_any.lua
 lua examples/fx_parallel_pipeline.lua
 lua examples/fx_fork_join.lua
 lua examples/fx_map_parallel.lua
+lua examples/fx_with_timeout.lua
 lua examples/cont_catch_throw.lua
 ```
 

@@ -8,7 +8,8 @@
 --   4. fx.when_all / fx.when_any 把并行组合编成 yield；由调度器时间轮并发驱动（对齐 C# WhenAll/WhenAny）。
 --   5. fx.fork / fx.join / fx.join_handles：非结构化并发（先 fork，中间可做别的事，再 join）。
 --   6. fx.map_parallel：有限并发池（滑动窗口 fork/join，结果按输入顺序）。
---   7. 这不是真实网络/UI；默认 handlers 只是 mock，便于演示与测试。
+--   7. fx.with_timeout：与 wait(deadline) 竞速；超时 → Failed("timeout")（可自定义）。
+--   8. 这不是真实网络/UI；默认 handlers 只是 mock，便于演示与测试。
 --
 -- 重要区分：
 --   Cont 上的 Coro.yield ≠ Lua 原生 coroutine.yield。
@@ -213,6 +214,34 @@ function fx.for_each_parallel(items, worker, opts)
 end
 
 ------------------------------------------------------------
+-- 超时竞速（with_timeout）
+------------------------------------------------------------
+
+-- with_timeout : Cont Answer a → seconds → opts? → Cont Answer a
+-- 与 fx.wait(seconds) 竞速：ma 先 Done → 返回其值；超时 → Failed
+-- 默认错误为字符串 "timeout"；opts.on_timeout 可换成自定义 reason（仍走 Failed）
+-- 与 Cont.withEnv __Timeout__ 对照：属性是逐步（per-step）超时；本组合子包裹整段 Cont
+-- Yield: { kind="with_timeout", task=ma, seconds=s, on_timeout=err }
+function fx.with_timeout(ma, seconds, opts)
+  assert(ma ~= nil, "fx.with_timeout: expected Cont Answer")
+  assert(type(seconds) == "number" and seconds >= 0,
+    "fx.with_timeout: seconds must be >= 0")
+  opts = opts or {}
+  local on_timeout = opts.on_timeout
+  if on_timeout == nil then
+    on_timeout = "timeout"
+  end
+  return Coro.yield({
+    kind = "with_timeout",
+    task = ma,
+    seconds = seconds,
+    on_timeout = on_timeout,
+  }) >> function(value)
+    return Cont.unit(value)
+  end
+end
+
+------------------------------------------------------------
 -- 默认 mock handlers（可被 fx.run 的 handlers? 覆盖）
 ------------------------------------------------------------
 
@@ -223,7 +252,7 @@ end
 -- 默认处理器：打印日志 + mock 成功结果
 -- kind="stop" 可选：若业务误用 Coro.yield{kind="stop"}，handlers 可识别；
 -- 正常请用 fx.stop（直接 Stopped，不经过 handler）。
--- when_all / when_any / fork / join 由 session 调度器处理，不经本表。
+-- when_all / when_any / fork / join / with_timeout 由 session 调度器处理，不经本表。
 local default_handlers = {
   wait = function(req)
     local secs = req.seconds or 0

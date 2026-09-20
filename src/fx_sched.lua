@@ -2,7 +2,7 @@
 --
 -- 统一驱动：
 --   · run_session(root_ma) — fx.run 主路径：动态任务集（nursery），支持
---       wait / connect/click / when_all·when_any / fork·join·join_handles
+--       wait / connect/click / when_all·when_any / fork·join·join_handles / with_timeout
 --   · run_parallel(tasks, mode) — 顶层 WhenAll/WhenAny（内部走 session）
 --
 -- Cont Coro 编码：每个任务 Coro.start；wait 在多任务时登记 deadline（墙钟），
@@ -194,6 +194,17 @@ settle_group = function(nursery, group, status, child)
     local payload = { value = child.result, index = child.group_pos }
     parent.answer = Coro.resume(parent.answer, payload)
     cancel_siblings(nursery, group, child.id)
+  elseif status == "done" and group.mode == "timeout" then
+    -- 子角色：body → 成功；timer → 超时 Failed
+    if child.timeout_role == "timer" then
+      parent.answer = Coro.Failed(group.on_timeout or "timeout")
+      cancel_siblings(nursery, group, child.id)
+      on_task_terminal(nursery, parent, "failed")
+    else
+      -- body 先完成
+      parent.answer = Coro.resume(parent.answer, child.result)
+      cancel_siblings(nursery, group, child.id)
+    end
   elseif status == "failed" then
     parent.answer = Coro.Failed(child.answer.error)
     parent.fail_index = child.group_pos
@@ -225,13 +236,15 @@ on_task_terminal = function(nursery, task, status)
     if status == "done" then
       group.values[task.group_pos] = task.result
       group.done_count = group.done_count + 1
-      if group.mode == "any" then
+      if group.mode == "any" or group.mode == "timeout" then
+        -- any / timeout：第一个 Done 即结算（timeout 下再按 role 区分成功/超时）
         settle_group(nursery, group, "done", task)
       elseif group.done_count >= group.n then
         settle_group(nursery, group, "done", task)
       end
     elseif status == "failed" then
-      if group.mode == "all" then
+      if group.mode == "all" or group.mode == "timeout" then
+        -- timeout：body Failed 立刻传播（并取消 timer）
         settle_group(nursery, group, "failed", task)
       else
         -- when_any：失败也算终态；若全部终态无一 Done，由主循环收尾
@@ -266,7 +279,8 @@ on_task_terminal = function(nursery, task, status)
         end
       end
     elseif status == "stopped" then
-      if group.mode == "all" then
+      if group.mode == "all" or group.mode == "timeout" then
+        -- timeout：body Stopped 立刻传播（并取消 timer）
         settle_group(nursery, group, "stopped", task)
       else
         group.done_count = group.done_count + 1
@@ -386,6 +400,45 @@ local function start_group(nursery, parent, req, mode)
   return "parked"
 end
 
+
+-- 启动 with_timeout：body 与 wait(seconds) 竞速
+local function start_timeout_race(nursery, parent, req)
+  local ma = req.task
+  local secs = req.seconds or 0
+  local on_timeout = req.on_timeout or "timeout"
+  assert(ma ~= nil, "fx_sched: with_timeout requires .task")
+
+  local group = {
+    parent_id = parent.id,
+    mode = "timeout",
+    child_ids = {},
+    values = {},
+    done_count = 0,
+    n = 2,
+    settled = false,
+    on_timeout = on_timeout,
+  }
+
+  local body = alloc_task(nursery, ma)
+  body.group_ref = group
+  body.group_pos = 1
+  body.timeout_role = "body"
+  group.child_ids[1] = body.id
+
+  local timer_ma = Coro.yield({ kind = "wait", seconds = secs }) >> function(_)
+    return Cont.unit(true)
+  end
+  local timer = alloc_task(nursery, timer_ma)
+  timer.group_ref = group
+  timer.group_pos = 2
+  timer.timeout_role = "timer"
+  group.child_ids[2] = timer.id
+
+  parent.parked = "group"
+  parent.waiting_group = group
+  return "parked"
+end
+
 drive_until_block = function(nursery, task)
   local handlers = nursery.handlers
   local opts = nursery.opts
@@ -432,6 +485,15 @@ drive_until_block = function(nursery, task)
         return "parked"
       end
       -- continued（空 all）：继续循环
+
+    ------------------------------------------------------------
+    -- with_timeout：body 与 wait(deadline) 竞速
+    ------------------------------------------------------------
+    elseif req.kind == "with_timeout" then
+      local st = start_timeout_race(nursery, task, req)
+      if st == "parked" then
+        return "parked"
+      end
 
     ------------------------------------------------------------
     -- fork：启动子 Cont，立刻把 handle 还给父任务

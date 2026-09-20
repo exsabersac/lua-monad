@@ -1418,6 +1418,48 @@ do
   assert_true(not ok_c, "concurrency >= 1 enforced")
 end
 
+
+------------------------------------------------------------
+-- fx：with_timeout 超时竞速
+------------------------------------------------------------
+do
+  local fx = require("fx")
+  local sched = require("fx_sched")
+
+  -- 限时内成功
+  local t0 = sched.now()
+  local r_ok = fx.run(fx.with_timeout(
+    fx.wait(0.02) >> function(_) return Cont.unit(7) end,
+    0.10
+  ))
+  local e_ok = sched.now() - t0
+  assert_true(r_ok.ok and r_ok.value == 7, "with_timeout success")
+  assert_true(e_ok < 0.07, "with_timeout success wall < 0.07 got " .. tostring(e_ok))
+
+  -- 超时 → Failed("timeout")
+  local t1 = sched.now()
+  local r_to = fx.run(fx.with_timeout(
+    fx.wait(0.08) >> function(_) return Cont.unit("late") end,
+    0.02
+  ))
+  local e_to = sched.now() - t1
+  assert_true(r_to.failed and r_to.error == "timeout", "with_timeout Failed(timeout)")
+  assert_true(e_to < 0.06, "with_timeout wall < 0.06 got " .. tostring(e_to))
+  assert_true(e_to >= 0.015, "with_timeout wall >= 0.015 got " .. tostring(e_to))
+
+  -- 自定义 on_timeout
+  local r_custom = fx.run(fx.with_timeout(
+    fx.wait(0.05),
+    0.01,
+    { on_timeout = "my-deadline" }
+  ))
+  assert_true(r_custom.failed and r_custom.error == "my-deadline", "on_timeout custom")
+
+  -- body 先 Failed
+  local r_fail = fx.run(fx.with_timeout(fx.fail("boom"), 1.0))
+  assert_true(r_fail.failed and r_fail.error == "boom", "body Failed before timeout")
+end
+
 ------------------------------------------------------------
 io.stdout:write("\n")
 if failures > 0 then
