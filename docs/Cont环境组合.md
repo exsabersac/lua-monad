@@ -70,3 +70,47 @@ Cont.withEnv(body)     → composed   -- 同实现
 
 - 重新赋值**非函数**到曾用过的步骤名时，该名会从管道中移除（其余步骤相对顺序不变）。
 - `env.pipe` / `env.compose` 在 `body` **返回之后**才挂上；body 内读不到最终组合函数，请用 `withEnv` 的返回值。
+
+## 更复杂的例子
+
+基础管道见上文与 [`examples/cont_env_pipe.lua`](../examples/cont_env_pipe.lua)。下面几个示例把 `withEnv` 与 callCC、CPS 协程、配置字段、较长算术链组合起来（均在仓库根目录 `lua examples/...` 可跑）：
+
+| 文件 | 在演示什么 |
+|------|------------|
+| [`examples/cont_env_callcc.lua`](../examples/cont_env_callcc.lua) | `validate → transform → finalize`；`Cont.callCC` / `escape` 拒绝负数时整链中止；对照 `evalCont` 成功与 abort |
+| [`examples/cont_env_coro_mix.lua`](../examples/cont_env_coro_mix.lua) | 中间步 `Coro.yield("need-input") >> …`；用 `Coro.start`/`resume` 或 `Coro.run` 驱动。**注意**：`Coro.yield` ≠ Lua 原生 `coroutine`；`withEnv` 只组织 `>>` |
+| [`examples/cont_env_data_driven.lua`](../examples/cont_env_data_driven.lua) | env 上非函数字段（`threshold` / `label`）不进管道；步骤闭包读 `env.threshold` 做 clamp + tag |
+| [`examples/cont_env_fact_pipeline.lua`](../examples/cont_env_fact_pipeline.lua) | 较长 CPS 链（normalize → square → sum）与阶乘步骤；以及对整段结果 `mapCont` |
+
+配置字段写法提示（两种均可；**勿**在参数名不是 `_ENV` 时写 `function clamp`——那会落到 chunk 全局、管道为空）：
+
+```lua
+-- A) 参数名 _ENV：`function clamp` 写入收集表；字段经 _ENV 读写
+Cont.withEnv(function(_ENV)
+  threshold = 10
+  function clamp(x)
+    local t = threshold
+    if x > t then return Cont.unit(t) else return Cont.unit(x) end
+  end
+  function tag(x)
+    return Cont.unit({ n = x, label = label })
+  end
+  label = "score"  -- 步骤在 pipe(x) 时读取即可
+end)
+
+-- B) 参数名 env：用赋值注册步骤，闭包捕获 env
+Cont.withEnv(function(env)
+  env.threshold = 10
+  env.label = "score"
+  env.clamp = function(x)
+    local t = env.threshold
+    if x > t then return Cont.unit(t) else return Cont.unit(x) end
+  end
+  env.tag = function(x)
+    return Cont.unit({ n = x, label = env.label })
+  end
+end)
+```
+
+body 内若需要 `type` / `print` / `math`，且参数名为 `_ENV`，请先在 chunk 顶层 `local type, print, math = type, print, math`，否则自由名会查 env 表而非全局。
+

@@ -153,7 +153,9 @@ bind(ma, f)  = function(k) return ma(function(a) return f(a)(k) end) end
 
 ### Cont 环境组合（`withEnv`）
 
-在 Cont 专用 env 里定义步骤函数，**默认**按定义序自动 `>>`（无 `ContPipe`）。详见 [`docs/Cont环境组合.md`](docs/Cont环境组合.md)；示例：`examples/cont_env_pipe.lua`。
+在 Cont 专用 env 里定义步骤函数，**默认**按定义序自动 `>>`（无 `ContPipe`）。详见 [`docs/Cont环境组合.md`](docs/Cont环境组合.md)。
+
+示例：`examples/cont_env_pipe.lua`（基础）；更复杂：`cont_env_callcc.lua`（callCC 中止）、`cont_env_coro_mix.lua`（与 CPS Coro 混用）、`cont_env_data_driven.lua`（配置字段）、`cont_env_fact_pipeline.lua`（长链 / 阶乘 / mapCont）。
 
 ```lua
 local pipe = Cont.withEnv(function(_ENV)
@@ -258,6 +260,11 @@ lua examples/writer_log.lua
 # Cont / CPS 协程示例
 lua examples/cont_callcc.lua
 lua examples/cont_cps_basics.lua
+lua examples/cont_env_pipe.lua
+lua examples/cont_env_callcc.lua
+lua examples/cont_env_coro_mix.lua
+lua examples/cont_env_data_driven.lua
+lua examples/cont_env_fact_pipeline.lua
 lua examples/coro_generator.lua
 lua examples/coro_interactive.lua
 ```
@@ -291,7 +298,11 @@ lua-monad/
   examples/writer_log.lua
   examples/cont_callcc.lua     # callCC 提前退出
   examples/cont_cps_basics.lua # CPS 加法/阶乘/定界续延
-  examples/cont_env_pipe.lua    # withEnv 自动 >>
+  examples/cont_env_pipe.lua         # withEnv 自动 >>
+  examples/cont_env_callcc.lua       # withEnv + callCC 中止
+  examples/cont_env_coro_mix.lua     # withEnv + Coro.yield
+  examples/cont_env_data_driven.lua  # withEnv 配置字段
+  examples/cont_env_fact_pipeline.lua# withEnv 长链 / 阶乘
   examples/coro_generator.lua  # yield 1..n + collect/run
   examples/coro_interactive.lua# yield 请求 / resume 回答
   docs/设计说明.md
