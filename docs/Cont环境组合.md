@@ -114,3 +114,34 @@ end)
 
 body 内若需要 `type` / `print` / `math`，且参数名为 `_ENV`，请先在 chunk 顶层 `local type, print, math = type, print, math`，否则自由名会查 env 表而非全局。
 
+## 多管道互调与局部函数
+
+`withEnv` 的返回值本身就是 `a → Cont r b`，因此多条管道可以互相调用，也可以把整条管道当作另一步：
+
+| 文件 | 在演示什么 |
+|------|------------|
+| [`examples/cont_env_mutual_pipes.lua`](../examples/cont_env_mutual_pipes.lua) | 多条独立管道（`prep` / `core` / `format`）分层互调：步内 `return prep(x) >> …`，或 `return core(x)`；另含非 withEnv 的小 Cont 助手 |
+| [`examples/cont_env_local_helpers.lua`](../examples/cont_env_local_helpers.lua) | **正确**：步内 `local function` 助手 + env 非函数配置；**错误对照**：把 helper `function` 到 env 会多出一个管道步骤 |
+| [`examples/cont_env_pipe_as_step.lua`](../examples/cont_env_pipe_as_step.lua) | 整段 `inner = Cont.withEnv(...)` 作为 `outer` 的 `mid` 步：`function mid(x) return inner(x) end`——干净的「CPS 调 CPS」 |
+
+组合直觉：
+
+```lua
+-- 管道只是函数；用 >> 或嵌套调用即可
+local prep = Cont.withEnv(function(_ENV) ... end)
+local core = Cont.withEnv(function(_ENV)
+  function ingest(x)
+    return prep(x) >> function(y) return Cont.unit(y) end
+  end
+  ...
+end)
+
+-- 或：整条 inner 当 outer 的一步
+local inner = Cont.withEnv(...)
+local outer = Cont.withEnv(function(_ENV)
+  function mid(x) return inner(x) end
+end)
+```
+
+注意分层（outer → inner），避免 A 调 B、B 再调 A 造成无限递归。助手函数务必写在步内 `local`，不要挂到 env。
+

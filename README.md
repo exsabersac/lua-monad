@@ -155,7 +155,7 @@ bind(ma, f)  = function(k) return ma(function(a) return f(a)(k) end) end
 
 在 Cont 专用 env 里定义步骤函数，**默认**按定义序自动 `>>`（无 `ContPipe`）。详见 [`docs/Cont环境组合.md`](docs/Cont环境组合.md)。
 
-示例：`examples/cont_env_pipe.lua`（基础）；更复杂：`cont_env_callcc.lua`（callCC 中止）、`cont_env_coro_mix.lua`（与 CPS Coro 混用）、`cont_env_data_driven.lua`（配置字段）、`cont_env_fact_pipeline.lua`（长链 / 阶乘 / mapCont）。
+示例：`examples/cont_env_pipe.lua`（基础）；更复杂：`cont_env_callcc.lua`（callCC 中止）、`cont_env_coro_mix.lua`（与 CPS Coro 混用）、`cont_env_data_driven.lua`（配置字段）、`cont_env_fact_pipeline.lua`（长链 / 阶乘 / mapCont）；互调 / 局部函数 / 管道当一步：`cont_env_mutual_pipes.lua`、`cont_env_local_helpers.lua`、`cont_env_pipe_as_step.lua`。
 
 ```lua
 local pipe = Cont.withEnv(function(_ENV)
@@ -265,6 +265,9 @@ lua examples/cont_env_callcc.lua
 lua examples/cont_env_coro_mix.lua
 lua examples/cont_env_data_driven.lua
 lua examples/cont_env_fact_pipeline.lua
+lua examples/cont_env_mutual_pipes.lua
+lua examples/cont_env_local_helpers.lua
+lua examples/cont_env_pipe_as_step.lua
 lua examples/coro_generator.lua
 lua examples/coro_interactive.lua
 ```
@@ -303,6 +306,9 @@ lua-monad/
   examples/cont_env_coro_mix.lua     # withEnv + Coro.yield
   examples/cont_env_data_driven.lua  # withEnv 配置字段
   examples/cont_env_fact_pipeline.lua# withEnv 长链 / 阶乘
+  examples/cont_env_mutual_pipes.lua # 多管道互调
+  examples/cont_env_local_helpers.lua# 步内 local 助手
+  examples/cont_env_pipe_as_step.lua # 管道当一步
   examples/coro_generator.lua  # yield 1..n + collect/run
   examples/coro_interactive.lua# yield 请求 / resume 回答
   docs/设计说明.md
