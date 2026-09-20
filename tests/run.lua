@@ -619,6 +619,65 @@ return @mdo Maybe
 end
 
 ------------------------------------------------------------
+-- Cont.withEnv：默认收集函数步骤、定义序 >>、同名替换、空环境
+------------------------------------------------------------
+do
+  local cont_env = require("cont_env")
+  assert_true(Cont.withEnv == cont_env.withEnv or type(Cont.withEnv) == "function",
+              "Cont.withEnv available")
+
+  local pipe = Cont.withEnv(function(_ENV)
+    function add1(x)
+      return Cont.unit(x + 1)
+    end
+    function times2(x)
+      return Cont.unit(x * 2)
+    end
+  end)
+  assert_eq(Cont.evalCont(pipe(3)), 8, "withEnv (3+1)*2 == 8")
+
+  -- 非函数字段不进管道
+  local pipe_skip = Cont.withEnv(function(_ENV)
+    factor = 10
+    function scale(x)
+      return Cont.unit(x * factor)
+    end
+    function add1(x)
+      return Cont.unit(x + 1)
+    end
+  end)
+  -- scale 先于 add1；factor 非函数
+  assert_eq(Cont.evalCont(pipe_skip(2)), 21, "withEnv non-fn field skipped (2*10)+1")
+
+  -- 同名再赋：原地替换，保留首次次序
+  local pipe_re = Cont.withEnv(function(_ENV)
+    function a(x) return Cont.unit(x + 1) end
+    function b(x) return Cont.unit(x * 2) end
+    function a(x) return Cont.unit(x + 100) end
+  end)
+  assert_eq(Cont.evalCont(pipe_re(1)), 202, "withEnv redefine keeps order (1+100)*2")
+
+  -- 空环境 ≡ unit
+  local empty = Cont.withEnv(function(_ENV) end)
+  assert_eq(Cont.evalCont(empty(7)), 7, "withEnv empty == unit")
+
+  -- env.pipe / env.compose 在 body 返回后挂上，与返回值同引用
+  local seen
+  local pipe3 = Cont.withEnv(function(_ENV)
+    function add1(x) return Cont.unit(x + 1) end
+    seen = _ENV
+  end)
+  assert_eq(Cont.evalCont(pipe3(1)), 2, "withEnv single step")
+  assert_true(seen.pipe == pipe3 and seen.compose == pipe3, "withEnv env.pipe/compose same")
+
+  -- 确认 cont_env.withEnv 与 Cont.withEnv 一致（触发延迟加载）
+  local p2 = cont_env.withEnv(function(_ENV)
+    function times3(x) return Cont.unit(x * 3) end
+  end)
+  assert_eq(Cont.evalCont(p2(4)), 12, "cont_env.withEnv times3")
+end
+
+------------------------------------------------------------
 io.stdout:write("\n")
 if failures > 0 then
   io.stderr:write(failures .. " failure(s)\n")

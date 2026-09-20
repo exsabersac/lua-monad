@@ -151,6 +151,18 @@ bind(ma, f)  = function(k) return ma(function(a) return f(a)(k) end) end
 - `callCC` 的 `escape` 可做提前退出（abort 风格），示例：`examples/cont_callcc.lua`。
 - CPS 串联示例：`examples/cont_cps_basics.lua`。
 
+### Cont 环境组合（`withEnv`）
+
+在 Cont 专用 env 里定义步骤函数，**默认**按定义序自动 `>>`（无 `ContPipe`）。详见 [`docs/Cont环境组合.md`](docs/Cont环境组合.md)；示例：`examples/cont_env_pipe.lua`。
+
+```lua
+local pipe = Cont.withEnv(function(_ENV)
+  function add1(x) return Cont.unit(x + 1) end
+  function times2(x) return Cont.unit(x * 2) end
+end)
+assert(Cont.evalCont(pipe(3)) == 8)
+```
+
 ## Cont → CPS 协程
 
 `src/coro.lua` 在 Cont 之上实现**单路** CPS 协程（不是 `coroutine.create`）：
@@ -266,6 +278,7 @@ lua-monad/
   src/writer.lua             # 默认 string + makeWriter / WriterList
   src/rws.lua                # Reader+Writer+State
   src/cont.lua
+  src/cont_env.lua           # Cont.withEnv 默认步骤收集
   src/coro.lua               # Cont-based CPS coro
   src/mdo.lua                # @mdo 预处理 + loadfile/dofile/loader
   tests/run.lua              # 定律 + 糖 + coro + mdo 断言
@@ -278,11 +291,13 @@ lua-monad/
   examples/writer_log.lua
   examples/cont_callcc.lua     # callCC 提前退出
   examples/cont_cps_basics.lua # CPS 加法/阶乘/定界续延
+  examples/cont_env_pipe.lua    # withEnv 自动 >>
   examples/coro_generator.lua  # yield 1..n + collect/run
   examples/coro_interactive.lua# yield 请求 / resume 回答
   docs/设计说明.md
   docs/API.md
   docs/do语法.md
+  docs/Cont环境组合.md
   README.md
 ```
 
@@ -291,6 +306,7 @@ lua-monad/
 - [CPS 设计与工作原理](docs/CPS设计与原理.md) — Cont、callCC、定界续延、CPS 协程三层模型
 - [设计说明](docs/设计说明.md) — 总架构与 makeMonad
 - [do 语法](docs/do语法.md) — `@mdo` 预处理器
+- [Cont 环境组合](docs/Cont环境组合.md) — `withEnv` 默认 `>>`
 - [API 参考](docs/API.md)
 
 ## 许可

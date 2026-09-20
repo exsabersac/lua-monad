@@ -170,6 +170,22 @@
 
 `mapCont` vs `withCont`：前者 `f` 包在跑完之后的结果上；后者 `f` 先变换续延再交给计算。示例见 `examples/cont_cps_basics.lua`、`examples/cont_callcc.lua`。
 
+| `withEnv(body)` | 见下节 `cont_env`；亦可 `require("cont_env")` 后使用 |
+
+---
+
+## `cont_env` — `src/cont_env.lua`（Cont 环境组合）
+
+在 Cont 专用 env 中定义 `a → Cont r b` 步骤，**默认**按首次出现名顺序折成 `Cont.unit(x) >> s1 >> s2 >> …`。无 `ContPipe`。详见 [`Cont环境组合.md`](Cont环境组合.md)。
+
+| 函数 | 说明 |
+|------|------|
+| `withEnv(body)` | `body(env)` 内写入的函数为步骤；同名替换保序；非函数不当步骤；→ `composed` |
+| `Cont.withEnv` | 与上同一实现（`cont_env` 加载时挂载；`cont` 首次调用延迟 require） |
+
+示例：`examples/cont_env_pipe.lua`。
+
+
 ---
 
 ## `Coro` — `src/coro.lua`
