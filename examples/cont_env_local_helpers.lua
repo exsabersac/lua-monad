@@ -69,5 +69,5 @@ local b = Cont.evalCont(bad(3))
 print("误挂 helper 后 evalCont(3):", b, "（期望若仅 main 则为 6）")
 assert(b == 206)
 
-print("\n警告：助手勿 function 到 env；用步内 local function。")
+print("\n警告：助手勿 function 到 env；用步内 local function，或 __Helper__() / __NotStep__()。")
 print("cont_env_local_helpers OK")

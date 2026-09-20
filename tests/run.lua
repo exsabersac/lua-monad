@@ -678,6 +678,127 @@ do
 end
 
 ------------------------------------------------------------
+-- Cont.withEnv 属性：Helper / Until / Before+After / 多属性 / 错误路径
+------------------------------------------------------------
+do
+  local cont_env = require("cont_env")
+
+  -- Helper：不进管道，但仍可调用
+  local seen_env
+  local pipe_h = Cont.withEnv(function(_ENV)
+    __Helper__()
+    function bump(x)
+      return Cont.unit(x + 100)
+    end
+    function main(x)
+      return bump(x) >> function(y)
+        return Cont.unit(y * 2)
+      end
+    end
+    seen_env = _ENV
+  end)
+  assert_eq(Cont.evalCont(pipe_h(3)), 206, "attr Helper: only main in pipe")
+  assert_true(type(seen_env.bump) == "function", "attr Helper: bump stored on env")
+  -- 管道只有 main：输入直接进 main；若 bump 也在管道会先 +100
+  -- 用「空调用管道」对照：再测 NotStep 别名 + 两步
+  local pipe_ns = Cont.withEnv(function(_ENV)
+    __NotStep__()
+    function hidden(x) return Cont.unit(x + 1) end
+    function a(x) return Cont.unit(x + 1) end
+    function b(x) return Cont.unit(x * 10) end
+  end)
+  assert_eq(Cont.evalCont(pipe_ns(2)), 30, "attr NotStep: (2+1)*10")
+
+  -- Until：grow until >= 10
+  local grow = Cont.withEnv(function(_ENV)
+    __Until__(function(a) return a >= 10 end)
+    function grow3(x) return Cont.unit(x + 3) end
+  end)
+  assert_eq(Cont.evalCont(grow(1)), 10, "attr Until: 1+3+3+3 == 10")
+
+  -- Until already satisfied after first step
+  local once = Cont.withEnv(function(_ENV)
+    __Until__(function(a) return a >= 0 end)
+    function id(x) return Cont.unit(x) end
+  end)
+  assert_eq(Cont.evalCont(once(5)), 5, "attr Until: pred true after first")
+
+  -- Before / After order（参数名用 env，避免 _ENV 遮蔽 tostring）
+  local log = {}
+  local pipe_ba = Cont.withEnv(function(env)
+    env.__Before__(function(x)
+      log[#log + 1] = "B" .. tostring(x)
+      return Cont.unit(x)
+    end)
+    env.__After__(function(x)
+      log[#log + 1] = "A" .. tostring(x)
+      return Cont.unit(x)
+    end)
+    env.add = function(x)
+      log[#log + 1] = "S" .. tostring(x)
+      return Cont.unit(x + 1)
+    end
+  end)
+  assert_eq(Cont.evalCont(pipe_ba(7)), 8, "attr Before/After result")
+  assert_eq(log[1], "B7", "attr Before first")
+  assert_eq(log[2], "S7", "attr step middle")
+  assert_eq(log[3], "A8", "attr After last")
+
+  -- Multiple attrs: Wrap then Before
+  local pipe_m = Cont.withEnv(function(_ENV)
+    __Wrap__(function(step)
+      return function(x)
+        return step(x) >> function(y) return Cont.unit(y + 100) end
+      end
+    end)
+    __Before__(function(x)
+      return Cont.unit(x * 2)
+    end)
+    function core(x)
+      return Cont.unit(x + 1)
+    end
+  end)
+  -- Before first on raw: pre=*2 then core +1 → 2*x+1；再 Wrap 外层 +100
+  -- Queue: Wrap then Before → apply Wrap first on core, then Before on that:
+  --   w1 = Wrap(core) = λx. core(x)>> (+100)
+  --   w2 = Before(w1) = λx. (*2)(x) >> w1
+  -- 输入 3 → 6 → core 7 → 107
+  assert_eq(Cont.evalCont(pipe_m(3)), 107, "attr multiple Wrap+Before")
+
+  -- cont_env.attrs standalone Until
+  local step = function(x) return Cont.unit(x + 2) end
+  local looped = cont_env.attrs.__Until__(function(a) return a >= 9 end)(step)
+  assert_eq(Cont.evalCont(looped(1)), 9, "attrs.__Until__ standalone 1+2*4")
+
+  -- pending attr + non-function → error
+  local ok_err = false
+  local er = pcall(function()
+    Cont.withEnv(function(_ENV)
+      __Helper__()
+      x = 1
+    end)
+  end)
+  assert_true(not er, "attr pending + non-fn errors")
+
+  -- pending attr at end of body → error
+  er = pcall(function()
+    Cont.withEnv(function(_ENV)
+      __Before__(function(x) return Cont.unit(x) end)
+    end)
+  end)
+  assert_true(not er, "attr pending at end of body errors")
+
+  -- Helper removes prior step from pipe
+  local pipe_rm = Cont.withEnv(function(_ENV)
+    function a(x) return Cont.unit(x + 1) end
+    function b(x) return Cont.unit(x * 2) end
+    __Helper__()
+    function a(x) return Cont.unit(x + 100) end  -- 从管道移除，仅保留 b
+  end)
+  assert_eq(Cont.evalCont(pipe_rm(3)), 6, "attr Helper redefine removes from pipe")
+end
+
+------------------------------------------------------------
 io.stdout:write("\n")
 if failures > 0 then
   io.stderr:write(failures .. " failure(s)\n")

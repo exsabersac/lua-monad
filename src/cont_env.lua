@@ -11,14 +11,108 @@
 -- 规则摘要：
 --   1. 函数赋值 → 管道步骤；同名再赋 → 原地替换（保留首次出现次序）。
 --   2. 非函数赋值 → 普通字段，不进管道（常量/表 ok）。
---   3. 助手函数请写在某步内部的 local function，勿挂到 env（否则也会成步骤）。
+--   3. 助手：步内 local；或 `__Helper__()` / `__NotStep__()` 标注后再赋函数（存 env 但不进 >>）。
 --   4. 零步骤时 composed ≡ Cont.unit（恒等管道）。
 --   5. 返回值为主；env.pipe / env.compose 指向同一 composed 便于自省。
 --   6. body 返回后会对步骤表做快照；之后再改 env 不影响已返回的 composed。
+--   7. 属性（`__Name__()`）排队，作用于**紧随其后**的那个函数赋值（PLoop 风格）。
 
 local Cont = require("cont")
 
 local cont_env = {}
+
+local DEFAULT_UNTIL_MAX = 1000
+
+-- 属性名（不可被用户覆盖为步骤）
+local ATTR_KEYS = {
+  __Helper__ = true,
+  __NotStep__ = true,
+  __Wrap__ = true,
+  __Before__ = true,
+  __After__ = true,
+  __Until__ = true,
+}
+
+------------------------------------------------------------
+-- 独立属性构造器：cont_env.attrs.__X__(...)(step) → new_step
+-- （不依赖 withEnv；Helper 返回 sentinel，见下）
+------------------------------------------------------------
+local function wrap_before(pre)
+  assert(type(pre) == "function", "__Before__: pre must be a function")
+  return function(step)
+    assert(type(step) == "function", "__Before__: step must be a function")
+    return function(x)
+      return pre(x) >> step
+    end
+  end
+end
+
+local function wrap_after(post)
+  assert(type(post) == "function", "__After__: post must be a function")
+  return function(step)
+    assert(type(step) == "function", "__After__: step must be a function")
+    return function(x)
+      return step(x) >> post
+    end
+  end
+end
+
+local function wrap_until(pred, max)
+  assert(type(pred) == "function", "__Until__: pred must be a function")
+  max = max or DEFAULT_UNTIL_MAX
+  assert(type(max) == "number" and max >= 1, "__Until__: max must be a positive number")
+  return function(step)
+    assert(type(step) == "function", "__Until__: step must be a function")
+    return function(x)
+      local function go(v, n)
+        if n > max then
+          error("__Until__: exceeded max iterations (" .. tostring(max) .. ")", 2)
+        end
+        return step(v) >> function(a)
+          if pred(a) then
+            return Cont.unit(a)
+          else
+            return go(a, n + 1)
+          end
+        end
+      end
+      return go(x, 1)
+    end
+  end
+end
+
+local function wrap_wrap(wrapper)
+  assert(type(wrapper) == "function", "__Wrap__: wrapper must be a function")
+  return function(step)
+    assert(type(step) == "function", "__Wrap__: step must be a function")
+    local out = wrapper(step)
+    assert(type(out) == "function", "__Wrap__: wrapper(step) must return a function")
+    return out
+  end
+end
+
+-- Helper sentinel：独立使用时标记「非步骤」；withEnv 内用队列 flag
+local HELPER_SENTINEL = { __attr_helper = true }
+
+cont_env.attrs = {
+  --- 标记下一函数为助手（独立 API 返回 sentinel；env 内排队）
+  __Helper__ = function()
+    return HELPER_SENTINEL
+  end,
+  __NotStep__ = function()
+    return HELPER_SENTINEL
+  end,
+  --- __Wrap__(wrapper)(step) → new_step
+  __Wrap__ = wrap_wrap,
+  --- __Before__(pre)(step) → λx. pre(x) >> step
+  __Before__ = wrap_before,
+  --- __After__(post)(step) → λx. step(x) >> post
+  __After__ = wrap_after,
+  --- __Until__(pred[, max])(step) → 循环直到 pred；默认 max=1000
+  __Until__ = wrap_until,
+}
+
+cont_env.DEFAULT_UNTIL_MAX = DEFAULT_UNTIL_MAX
 
 -- 按有序名表 + name→fn 映射折成 a → Cont r z
 local function compose_steps(order, steps)
@@ -34,36 +128,133 @@ local function compose_steps(order, steps)
   end
 end
 
+--- 从 pending 队列折叠包装器到 value；返回 new_fn, is_helper
+local function apply_pending(pending, value)
+  local is_helper = false
+  local fn = value
+  for _, item in ipairs(pending) do
+    if item.kind == "helper" then
+      is_helper = true
+    elseif item.kind == "wrap" then
+      fn = item.apply(fn)
+    end
+  end
+  return fn, is_helper
+end
+
+--- 构造挂到 env 上的属性构造器（写入 pending）
+local function make_env_attr_ctors(pending)
+  local function queue_helper()
+    pending[#pending + 1] = { kind = "helper" }
+  end
+
+  return {
+    __Helper__ = function()
+      queue_helper()
+    end,
+    __NotStep__ = function()
+      queue_helper()
+    end,
+    __Wrap__ = function(wrapper)
+      local apply = wrap_wrap(wrapper)
+      pending[#pending + 1] = { kind = "wrap", apply = apply }
+    end,
+    __Before__ = function(pre)
+      local apply = wrap_before(pre)
+      pending[#pending + 1] = { kind = "wrap", apply = apply }
+    end,
+    __After__ = function(post)
+      local apply = wrap_after(post)
+      pending[#pending + 1] = { kind = "wrap", apply = apply }
+    end,
+    __Until__ = function(pred, max)
+      local apply = wrap_until(pred, max)
+      pending[#pending + 1] = { kind = "wrap", apply = apply }
+    end,
+  }
+end
+
+local function clear_pending(pending)
+  for i = #pending, 1, -1 do
+    pending[i] = nil
+  end
+end
+
+local function remove_from_order(order, key)
+  for i = #order, 1, -1 do
+    if order[i] == key then
+      table.remove(order, i)
+      break
+    end
+  end
+end
+
 --- withEnv(body) → composed
 -- body(env)：在 env 上用 `function name(...) ... end` 或 `env.name = fn` 定义步骤。
+-- 可用 `__Helper__()` / `__Wrap__` / `__Before__` / `__After__` / `__Until__` 标注下一函数。
 -- 返回 composed：a → Cont r z，等价于 foldl (>>) Cont.unit（定义序；同名替换保序）。
 function cont_env.withEnv(body)
   assert(type(body) == "function", "withEnv: body must be a function")
 
   local order = {} -- 首次出现的步骤名，保序
-  local steps = {} -- name → step 函数
-  local data = {} -- 普通字段存储（含最终 pipe/compose）
+  local steps = {} -- name → step 函数（仅管道步骤）
+  local data = {} -- 普通字段存储（含助手函数、最终 pipe/compose）
+  local pending = {} -- 排队中的属性 applicators / helper flags
+  local attr_ctors = make_env_attr_ctors(pending)
 
   local env = {}
   local mt = {
-    __index = data,
+    __index = function(_, key)
+      local v = rawget(data, key)
+      if v ~= nil then
+        return v
+      end
+      return attr_ctors[key]
+    end,
     __newindex = function(_, key, value)
+      if ATTR_KEYS[key] then
+        error("withEnv: cannot overwrite attribute constructor '" .. tostring(key) .. "'", 2)
+      end
+
       if type(value) == "function" then
-        if steps[key] == nil then
-          order[#order + 1] = key
+        local is_helper = false
+        if #pending > 0 then
+          value, is_helper = apply_pending(pending, value)
+          clear_pending(pending)
         end
-        steps[key] = value
-        rawset(data, key, value) -- 也允许 env.name 读回该函数
+
+        if is_helper then
+          -- 存到 data，但不进管道；若曾是步骤则移除
+          if steps[key] ~= nil then
+            steps[key] = nil
+            remove_from_order(order, key)
+          end
+          rawset(data, key, value)
+        else
+          if steps[key] == nil then
+            -- 若此前是 helper-only，不算「首次步骤」以外的特殊情况：直接加入 order
+            order[#order + 1] = key
+          end
+          steps[key] = value
+          rawset(data, key, value)
+        end
       else
+        -- 非函数：若有未消耗属性 → 报错（必须紧跟函数）
+        if #pending > 0 then
+          clear_pending(pending)
+          error(
+            "withEnv: pending attribute(s) require a following function assignment, got "
+              .. type(value)
+              .. " for key '"
+              .. tostring(key)
+              .. "'",
+            2
+          )
+        end
         -- 非函数：不当作步骤；若曾是步骤名则从管道移除
         if steps[key] ~= nil then
           steps[key] = nil
-          for i = #order, 1, -1 do
-            if order[i] == key then
-              table.remove(order, i)
-              break
-            end
-          end
+          remove_from_order(order, key)
         end
         rawset(data, key, value)
       end
@@ -72,6 +263,11 @@ function cont_env.withEnv(body)
   setmetatable(env, mt)
 
   body(env)
+
+  if #pending > 0 then
+    clear_pending(pending)
+    error("withEnv: pending attribute(s) at end of body with no following function", 2)
+  end
 
   -- 快照：composed 固定为 body 结束时的步骤序列
   local order_snap = {}

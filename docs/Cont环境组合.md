@@ -32,7 +32,7 @@ assert(Cont.evalCont(pipe(3)) == 8)  -- (3+1)*2
 | 顺序 | 按**首次出现**的名字顺序 `foldl (>>) Cont.unit` |
 | 同名再定义 | **原地替换**该名对应步骤，不改变相对次序 |
 | 非函数赋值 | 普通字段，**不进**管道（数字/表等辅助数据 ok） |
-| 助手函数 | 请写在某步内部的 `local function`；挂到 env 的函数一律当步骤 |
+| 助手函数 | 步内 `local function`；或 `__Helper__()` / `__NotStep__()` 后再赋函数（存 env 不进管道）；未标注则挂到 env 的函数一律当步骤 |
 | 零步骤 | 返回恒等管道，等价于 `Cont.unit` |
 | 返回值 | `composed(x) → Cont`；另在 env 上 `rawset` `pipe` / `compose` 指向同一函数（body 返回后可读） |
 
@@ -143,5 +143,74 @@ local outer = Cont.withEnv(function(_ENV)
 end)
 ```
 
-注意分层（outer → inner），避免 A 调 B、B 再调 A 造成无限递归。助手函数务必写在步内 `local`，不要挂到 env。
+注意分层（outer → inner），避免 A 调 B、B 再调 A 造成无限递归。助手可用步内 `local`，或 `__Helper__()` / `__NotStep__()` 标注后再挂到 env。
+
+
+## 属性系统（PLoop 风格轻量版）
+
+不依赖 PLoop。在 `withEnv(body)` 内调用 `__Name__()` **排队**一个属性；**紧接着**赋给 env 的下一个函数即目标（与 PLoop 属性语法同构的运行时版）。
+
+### 内置属性（MVP）
+
+| 属性 | 作用 |
+|------|------|
+| `__Helper__()` / `__NotStep__()` | 函数存到 env，**不**加入 `>>` 管道顺序（解决「助手挂在 env 上」） |
+| `__Wrap__(wrapper)` | `wrapper(step) → new_step`；注册时包装 |
+| `__Before__(pre)` | 糖：`λx. pre(x) >> step`（`pre : a → Cont r a` 或兼容） |
+| `__After__(post)` | 糖：`λx. step(x) >> post` |
+| `__Until__(pred[, max])` | 每步结果 `a` 若 `pred(a)` 则停，否则把 `a` 再喂给 step；默认 `max=1000` 防死循环 |
+
+多个属性可叠在同一函数前：按**排队顺序**依次把包装器折到目标上。例如：
+
+```lua
+__Before__(pre)
+__After__(post)
+function step(x) ... end
+-- 等价于 λx. (pre(x) >> step) >> post，即 pre → step → post
+```
+
+`callCC`：请在步骤体内直接用 `Cont.callCC`（见 `examples/cont_env_callcc.lua`）；本 MVP 不另做 `__CallCC__` 包装。
+
+### 用法示例
+
+```lua
+local pipe = Cont.withEnv(function(_ENV)
+  __Helper__()
+  function bump(x)
+    return Cont.unit(x + 1)
+  end
+
+  __Before__(function(x)
+    print("in", x)
+    return Cont.unit(x)
+  end)
+  __After__(function(x)
+    print("out", x)
+    return Cont.unit(x)
+  end)
+  function work(x)
+    return bump(x) >> function(y) return Cont.unit(y * 2) end
+  end
+
+  __Until__(function(a) return a >= 10 end)
+  function grow(x)
+    return Cont.unit(x + 3)
+  end
+end)
+```
+
+可执行示例：
+
+| 文件 | 演示 |
+|------|------|
+| [`examples/cont_env_attrs_helper.lua`](../examples/cont_env_attrs_helper.lua) | `__Helper__` vs 误把助手当步骤 |
+| [`examples/cont_env_attrs_until.lua`](../examples/cont_env_attrs_until.lua) | `__Until__` 增长到 ≥ 10 |
+| [`examples/cont_env_attrs_before_after.lua`](../examples/cont_env_attrs_before_after.lua) | `__Before__` / `__After__` 日志与 `cont_env.attrs` |
+
+### 规则与错误
+
+- 属性必须紧跟**函数**赋值；若随后赋非函数，或 body 结束时仍有未消耗属性 → **报错**。
+- 不可覆盖 `__Helper__` 等属性构造器名。
+- 同名先做步骤再 `__Helper__` 重定义 → 从管道移除，仍可在 env 上读到函数。
+- 独立（非 env）包装：`cont_env.attrs.__Before__(pre)(step)` 等，见 `src/cont_env.lua`。
 
