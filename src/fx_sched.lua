@@ -127,8 +127,10 @@ local function alloc_task(nursery, ma)
     join_target = nil,
     join_targets = nil,
     join_values = nil,
+    join_cancel_siblings = nil, -- join / join_handles 成功后是否取消兄弟
     group_ref = nil,
     group_pos = nil,
+    parent_id = nil, -- fork 时记录父任务 id（取消传播树）
     joiners = {},
     fail_index = nil,
     result = nil,
@@ -173,6 +175,57 @@ local function cancel_siblings(nursery, group, except_id)
         mark_finished(c)
         -- 不再递归唤醒 joiners（结构化组内取消）
       end
+    end
+  end
+end
+
+
+-- 取消同一 fork 父任务下、未纳入 except_ids 的未完成兄弟（及其仍在跑的后代由 session 级 cancel 覆盖）
+-- 用于 join/join_handles 的 opts.cancel_siblings
+local function cancel_fork_siblings(nursery, joined_ids, joiner_id, reason)
+  reason = reason or "cancelled"
+  local parents = {}
+  for jid, _ in pairs(joined_ids) do
+    local jt = nursery.tasks[jid]
+    if jt and jt.parent_id then
+      parents[jt.parent_id] = true
+    end
+  end
+  local ids = {}
+  for id, _ in pairs(nursery.tasks) do
+    ids[#ids + 1] = id
+  end
+  table.sort(ids)
+  for _, id in ipairs(ids) do
+    if id ~= joiner_id and not joined_ids[id] then
+      local t = nursery.tasks[id]
+      if t and not t.finished and t.parent_id and parents[t.parent_id] then
+        t.answer = Coro.Stopped(reason)
+        -- 标记终态并唤醒仍在等该兄弟的 join 方
+        if not t._terminal_handled then
+          on_task_terminal(nursery, t, "stopped")
+        else
+          mark_finished(t)
+        end
+      end
+    end
+  end
+end
+
+-- session 级取消：停止 nursery 内全部未完成任务
+local function cancel_all_unfinished(nursery, reason)
+  reason = reason or "cancelled"
+  local ids = {}
+  for id, _ in pairs(nursery.tasks) do
+    ids[#ids + 1] = id
+  end
+  table.sort(ids)
+  for _, id in ipairs(ids) do
+    local t = nursery.tasks[id]
+    if t and not t.finished then
+      t.answer = Coro.Stopped(reason)
+      mark_finished(t)
+      t._terminal_handled = true
     end
   end
 end
@@ -321,6 +374,10 @@ try_complete_joins = function(nursery, finished_task, status)
         j.join_target = nil
         if status == "done" then
           j.answer = Coro.resume(j.answer, finished_task.result)
+          if j.join_cancel_siblings then
+            j.join_cancel_siblings = nil
+            cancel_fork_siblings(nursery, { [finished_task.id] = true }, j.id, "cancelled")
+          end
         elseif status == "failed" then
           j.answer = Coro.Failed(finished_task.answer.error)
           mark_finished(j)
@@ -356,9 +413,19 @@ try_complete_joins = function(nursery, finished_task, status)
             if j.join_done >= #j.join_targets then
               j.parked = nil
               local values = j.join_values
+              local targets = j.join_targets
+              local want_cancel = j.join_cancel_siblings
               j.join_targets = nil
               j.join_values = nil
+              j.join_cancel_siblings = nil
               j.answer = Coro.resume(j.answer, values)
+              if want_cancel and targets then
+                local joined = {}
+                for _, tid in ipairs(targets) do
+                  joined[tid] = true
+                end
+                cancel_fork_siblings(nursery, joined, j.id, "cancelled")
+              end
             end
           end
         end
@@ -393,6 +460,7 @@ local function start_group(nursery, parent, req, mode)
     local child = alloc_task(nursery, mas[i])
     child.group_ref = group
     child.group_pos = i
+    child.parent_id = parent.id -- 结构化并行也挂到父，便于 session cancel 树
     group.child_ids[i] = child.id
   end
   parent.parked = "group"
@@ -423,6 +491,7 @@ local function start_timeout_race(nursery, parent, req)
   body.group_ref = group
   body.group_pos = 1
   body.timeout_role = "body"
+  body.parent_id = parent.id
   group.child_ids[1] = body.id
 
   local timer_ma = Coro.yield({ kind = "wait", seconds = secs }) >> function(_)
@@ -432,6 +501,7 @@ local function start_timeout_race(nursery, parent, req)
   timer.group_ref = group
   timer.group_pos = 2
   timer.timeout_role = "timer"
+  timer.parent_id = parent.id
   group.child_ids[2] = timer.id
 
   parent.parked = "group"
@@ -502,6 +572,7 @@ drive_until_block = function(nursery, task)
       local ma = req.task
       assert(ma ~= nil, "fx_sched: fork requires .task")
       local child = alloc_task(nursery, ma)
+      child.parent_id = task.id -- 取消传播树：记录 fork 父
       local handle = { id = child.id }
       task.answer = Coro.resume(task.answer, handle)
       -- 不 return：父任务继续；子任务留给主循环驱动
@@ -515,9 +586,13 @@ drive_until_block = function(nursery, task)
         "fx_sched: join requires handle {id=number}")
       local child = nursery.tasks[h.id]
       assert(child, "fx_sched: join unknown handle id=" .. tostring(h.id))
+      local want_cancel = not not req.cancel_siblings
       if child.finished then
         if Coro.isDone(child.answer) then
           task.answer = Coro.resume(task.answer, child.result)
+          if want_cancel then
+            cancel_fork_siblings(nursery, { [child.id] = true }, task.id, "cancelled")
+          end
         elseif Coro.isFailed(child.answer) then
           task.answer = Coro.Failed(child.answer.error)
           return "failed"
@@ -530,6 +605,7 @@ drive_until_block = function(nursery, task)
       else
         task.parked = "join"
         task.join_target = child.id
+        task.join_cancel_siblings = want_cancel
         child.joiners[#child.joiners + 1] = task.id
         return "parked"
       end
@@ -566,6 +642,7 @@ drive_until_block = function(nursery, task)
             end
           end
         end
+        local want_cancel = not not req.cancel_siblings
         if fail_now then
           task.answer = Coro.Failed(fail_now.answer.error)
           return "failed"
@@ -576,11 +653,19 @@ drive_until_block = function(nursery, task)
         end
         if done_n >= #handles then
           task.answer = Coro.resume(task.answer, values)
+          if want_cancel then
+            local joined = {}
+            for _, tid in ipairs(targets) do
+              joined[tid] = true
+            end
+            cancel_fork_siblings(nursery, joined, task.id, "cancelled")
+          end
         else
           task.parked = "join_all"
           task.join_targets = targets
           task.join_values = values
           task.join_done = done_n
+          task.join_cancel_siblings = want_cancel
           for i, tid in ipairs(targets) do
             local child = nursery.tasks[tid]
             if not child.finished then
@@ -647,6 +732,10 @@ function M.run_session(ma, handlers, opts)
 
   while not root.finished do
     if is_cancelled(opts.cancel) then
+      -- 取消传播树：停止全部未完成子任务（含 fork / when_all / map_parallel worker）
+      cancel_all_unfinished(nursery, "cancelled")
+      root.answer = Coro.Stopped("cancelled")
+      root.finished = true
       return { ok = false, stopped = true, reason = "cancelled" }
     end
 

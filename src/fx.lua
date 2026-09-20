@@ -9,7 +9,8 @@
 --   5. fx.fork / fx.join / fx.join_handles：非结构化并发（先 fork，中间可做别的事，再 join）。
 --   6. fx.map_parallel：有限并发池（滑动窗口 fork/join，结果按输入顺序）。
 --   7. fx.with_timeout：与 wait(deadline) 竞速；超时 → Failed("timeout")（可自定义）。
---   8. 这不是真实网络/UI；默认 handlers 只是 mock，便于演示与测试。
+--   8. 取消传播树：session cancel 停止未完成子任务；join 可选 cancel_siblings。
+--   9. 这不是真实网络/UI；默认 handlers 只是 mock，便于演示与测试。
 --
 -- 重要区分：
 --   Cont 上的 Coro.yield ≠ Lua 原生 coroutine.yield。
@@ -113,23 +114,35 @@ end
 
 fx.spawn = fx.fork -- 别名：≈ Task.Run / 启动子任务
 
--- join : Handle → Cont Answer a
+-- join : Handle → opts? → Cont Answer a
 -- 等到该 fork 子任务 Done，resume 其值；Failed/Stopped 向父传播
--- Yield: { kind="join", handle=h }
-function fx.join(handle)
+-- opts.cancel_siblings=true：join 成功后，停止同一 fork 父任务下其它未完成兄弟
+-- Yield: { kind="join", handle=h, cancel_siblings?=bool }
+function fx.join(handle, opts)
   assert(type(handle) == "table" and handle.id ~= nil,
     "fx.join: expected handle {id=...}")
-  return Coro.yield({ kind = "join", handle = handle }) >> function(value)
+  opts = opts or {}
+  local req = { kind = "join", handle = handle }
+  if opts.cancel_siblings then
+    req.cancel_siblings = true
+  end
+  return Coro.yield(req) >> function(value)
     return Cont.unit(value)
   end
 end
 
--- join_handles : { Handle, ... } → Cont Answer { a, ... }
+-- join_handles : { Handle, ... } → opts? → Cont Answer { a, ... }
 -- 按 handle 列表顺序收集结果（≈ when_all 的 values 顺序）
--- Yield: { kind="join_handles", handles=hs }
-function fx.join_handles(handles)
+-- opts.cancel_siblings=true：全部成功 join 后，取消同父下未纳入本集合的兄弟
+-- Yield: { kind="join_handles", handles=hs, cancel_siblings?=bool }
+function fx.join_handles(handles, opts)
   assert(type(handles) == "table", "fx.join_handles: expected array of handles")
-  return Coro.yield({ kind = "join_handles", handles = handles }) >> function(values)
+  opts = opts or {}
+  local req = { kind = "join_handles", handles = handles }
+  if opts.cancel_siblings then
+    req.cancel_siblings = true
+  end
+  return Coro.yield(req) >> function(values)
     return Cont.unit(values)
   end
 end

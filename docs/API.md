@@ -249,14 +249,14 @@ end
 | `fx.when_all(mas)` / `fx.join_all` | Cont：yield `{kind="when_all",tasks}`；resume → values 数组（≈ `Task.WhenAll`） |
 | `fx.when_any(mas)` / `fx.join_any` | Cont：yield `{kind="when_any",tasks}`；resume → `{value,index}`（≈ `Task.WhenAny`） |
 | `fx.fork(ma)` / `fx.spawn` | Cont：yield `{kind="fork",task}`；resume → handle `{id=number}`（≈ `Task.Run`） |
-| `fx.join(handle)` | Cont：yield `{kind="join",handle}`；resume → 子任务 Done 值；Failed/Stopped 传播 |
-| `fx.join_handles(handles)` | Cont：yield `{kind="join_handles",handles}`；resume → values（顺序与 handle 列表一致） |
+| `fx.join(handle, opts?)` | Cont：yield `{kind="join",handle,cancel_siblings?}`；resume → 子 Done 值；`opts.cancel_siblings` 成功后取消同父兄弟 |
+| `fx.join_handles(handles, opts?)` | Cont：yield `{kind="join_handles",handles,cancel_siblings?}`；resume → values；可选 `cancel_siblings` |
 | `fx.map_parallel(items, worker, opts?)` | 有限并发：`worker(item,index)→Cont Answer a`；`opts.concurrency` 默认 4（>=1）；结果按输入顺序 |
 | `fx.for_each_parallel(items, worker, opts?)` | 同 `map_parallel`，丢弃返回值，最终 `true` |
 | `fx.with_timeout(ma, seconds, opts?)` | 与 `wait(seconds)` 竞速；超时 → `Failed(opts.on_timeout or "timeout")`；成功则返回 `ma` 的值 |
 | `fx.run_parallel(tasks, handlers?, opts?)` | 顶层并行；`opts.mode="all"|"any"`；经 session 时间轮 |
 | `fx.run_all` / `fx.run_any` | `run_parallel` 别名 |
-| `fx.run(ma, handlers?, opts?)` | nursery session 驱动整段管道；`opts.cancel`；**始终**返回结果表 |
+| `fx.run(ma, handlers?, opts?)` | nursery session 驱动；`opts.cancel` 时停止全部未完成子任务（取消传播树）；**始终**返回结果表 |
 | `fx.try(ma, handlers?, opts)` | 同 `run`；`opts.on_fail` / `opts.on_stop` 可恢复 |
 
 `fx.run` 结果表：`{ok=true,value}` \| `{ok=true,values}` \| `{ok=true,value,index}` \| `{ok=false,stopped=true,reason}` \| `{ok=false,failed=true,error}`。  

@@ -1460,6 +1460,73 @@ do
   assert_true(r_fail.failed and r_fail.error == "boom", "body Failed before timeout")
 end
 
+
+------------------------------------------------------------
+-- fx：取消传播树 / join cancel_siblings
+------------------------------------------------------------
+do
+  local fx = require("fx")
+  local sched = require("fx_sched")
+
+  -- session cancel 停止 fork 子任务
+  local token = { cancelled = false }
+  local child_done = false
+  local r_can = fx.run(
+    fx.fork(fx.wait(0.12) >> function(_)
+      child_done = true
+      return Cont.unit("slow")
+    end) >> function(h)
+      return fx.connect("x") >> function(_)
+        return fx.join(h)
+      end
+    end,
+    {
+      connect = function(req)
+        token.cancelled = true
+        return { ok = true, host = req.host }
+      end,
+    },
+    { cancel = token }
+  )
+  assert_true(r_can.stopped and r_can.reason == "cancelled", "cancel tree session")
+  assert_true(child_done == false, "cancel tree child stopped")
+
+  -- join cancel_siblings
+  local b_done = false
+  local t0 = sched.now()
+  local r_sib = fx.run(
+    fx.fork(fx.wait(0.025) >> function(_) return Cont.unit("fast") end) >> function(hA)
+      return fx.fork(fx.wait(0.20) >> function(_)
+        b_done = true
+        return Cont.unit("slow")
+      end) >> function(_hB)
+        return fx.join(hA, { cancel_siblings = true })
+      end
+    end
+  )
+  local e = sched.now() - t0
+  assert_true(r_sib.ok and r_sib.value == "fast", "cancel_siblings join value")
+  assert_true(b_done == false, "cancel_siblings stopped sibling")
+  assert_true(e < 0.10, "cancel_siblings wall < 0.10 got " .. tostring(e))
+
+  -- join_handles cancel_siblings
+  local c_done = false
+  local r_jh = fx.run(
+    fx.fork(Cont.unit(1)) >> function(h1)
+      return fx.fork(Cont.unit(2)) >> function(h2)
+        return fx.fork(fx.wait(0.15) >> function(_)
+          c_done = true
+          return Cont.unit(3)
+        end) >> function(_h3)
+          return fx.join_handles({ h1, h2 }, { cancel_siblings = true })
+        end
+      end
+    end
+  )
+  assert_true(r_jh.ok and r_jh.value[1] == 1 and r_jh.value[2] == 2, "join_handles cancel_siblings vals")
+  assert_true(c_done == false, "join_handles cancel_siblings stopped extra")
+end
+
 ------------------------------------------------------------
 io.stdout:write("\n")
 if failures > 0 then
