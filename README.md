@@ -1,10 +1,14 @@
 # Lua Monad 模拟库
 
-在纯 Lua 中模拟 Haskell 风格的 **Monad**，并用 **Cont（续延）** 实现基于 CPS 的协程（非 Lua 原生 `coroutine`）。
+在纯 Lua 中模拟 Haskell 风格的 **Monad**，并用 **Cont（续延）** 实现基于 CPS 的协程（不是 Lua 原生 `coroutine`）。
+
+面向教学与对照阅读：值形态、定律测试、以及 LYAH「走钢丝」示例均可在本仓库直接跑通。
+
+更细的设计说明见 [`docs/设计说明.md`](docs/设计说明.md)；API 一览见 [`docs/API.md`](docs/API.md)。
 
 ## `m` 在 Lua 里是什么？
 
-Haskell 里常写 `m a`（「装在 monad `m` 里的 `a`」）。本库用一张普通 Lua table 表示某个 monad 实例，习惯上命名为 `m` 或模块名（`Maybe`、`List`…）：
+Haskell 里常写 `m a`（「装在 monad `m` 里的 `a`」）。本库用一张普通 Lua table 表示某个 monad **实例/模块**，习惯上命名为 `m` 或模块名（`Maybe`、`List`…）：
 
 | 字段 | 含义 |
 |------|------|
@@ -19,9 +23,11 @@ local monad = require("monad")
 local m = monad.makeMonad({ unit = ..., bind = ... })
 ```
 
+`makeMonad` 还会给产出的 monadic 值挂上共享元表，并支持 `m(x)` 作为 `m.unit(x)` 的简写。
+
 ## 元表符号糖
 
-`makeMonad` 会给 monadic 值挂上共享元表，支持更接近 Haskell 的写法（需 **Lua 5.3+ / 5.4**）：
+需 **Lua 5.3+ / 5.4**（本仓库按 5.4 测）：
 
 | 语法 | 元方法 | 含义 |
 |------|--------|------|
@@ -29,8 +35,10 @@ local m = monad.makeMonad({ unit = ..., bind = ... })
 | `ma .. mb` | `__concat` | 先跑 `ma` 再丢弃其结果，得到 `mb`（Haskell `>>`） |
 | `Maybe(x)` | 模块 `__call` | 等价于 `Maybe.unit(x)` |
 
-- **表形** monad（Maybe / List / Status）：直接在值表上 `setmetatable`，保留 `tag`、`value`、数组部分等字段。
-- **函数形** monad（Cont / State）：包成可调用代理 `{ _fn = f }`（`__call` 转发）；`runCont` / `runState` 等会自动 `unwrap`。也可用 `m.unwrap` / `m.wrap`。
+值形态：
+
+- **表形**（Maybe / List / Status）：直接在值表上 `setmetatable`，保留 `tag`、`value`、数组部分等字段。
+- **函数形**（Cont / State）：包成可调用代理 `{ _fn = f }`（`__call` 转发）；`runCont` / `runState` 等会自动 `unwrap`。也可用 `m.unwrap` / `m.wrap`。
 
 示例：
 
@@ -68,7 +76,7 @@ local v = Cont.runCont(
 { tag = "nothing" }           -- Nothing
 ```
 
-`Nothing` 会短路后续 `bind`。
+`Nothing` 会短路后续 `bind`。教学示例见下方「Walk the line」。
 
 ### List — 非确定性 / 多结果
 
@@ -98,6 +106,8 @@ unit(a)      = function(k) return k(a) end
 bind(ma, f)  = function(k) return ma(function(a) return f(a)(k) end) end
 ```
 
+另有 `callCC` 与 `runCont`。
+
 ## Cont → CPS 协程
 
 `src/coro.lua` 在 Cont 之上实现**单路** CPS 协程（不是 `coroutine.create`）：
@@ -113,14 +123,26 @@ API：
 - `Coro.start(ma)` — 以「最终值包成 Done」为顶层续延启动
 - `Coro.resume(y, b)` — 把 `b` 喂给挂起的 `cont`
 
-适合教学：看清「yield = 捕获当前续延」的本质。也可与 Cont 的 `>>` 混用。
+适合教学：看清「yield = 捕获当前续延」的本质。也可与 Cont 的 `>>` 混用。设计上的三层划分见 [`docs/设计说明.md`](docs/设计说明.md)。
+
+## Walk the line（LYAH）
+
+[`examples/walk_the_line.lua`](examples/walk_the_line.lua) 对照 *Learn You a Haskell*「A Fistful of Monads」中 Pierre 走钢丝：
+
+- `Pole` 用 `{ left, right }`；
+- `landLeft` / `landRight` / `banana` 返回 `Maybe Pole`；
+- 链式用 `>>`（`>>=`），插入失败用 `..`（Haskell `>>`）。
+
+```bash
+lua examples/walk_the_line.lua
+```
 
 ## 如何运行
 
 需要 Lua 5.4+（本机可用 `lua` 或 `lua5.4`）。
 
 ```bash
-cd /workspace/lua-monad
+cd /workspace/lua-monad   # 或你的克隆路径
 
 # 测试（失败则非零退出）
 lua tests/run.lua
@@ -138,16 +160,18 @@ lua examples/walk_the_line.lua
 
 ```
 lua-monad/
-  src/monad.lua    # makeMonad + 元表符号糖
+  src/monad.lua              # makeMonad + 元表符号糖
   src/maybe.lua
   src/list.lua
   src/state.lua
   src/status.lua
   src/cont.lua
-  src/coro.lua     # Cont-based CPS coro
-  tests/run.lua
+  src/coro.lua               # Cont-based CPS coro
+  tests/run.lua              # 定律 + 糖 + coro 断言
   examples/demo.lua
-  examples/walk_the_line.lua  # LYAH Maybe 示例
+  examples/walk_the_line.lua # LYAH Maybe 示例
+  docs/设计说明.md
+  docs/API.md
   README.md
 ```
 

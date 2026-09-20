@@ -1,14 +1,17 @@
 #!/usr/bin/env lua
--- Walk the line — Learn You a Haskell 《A Fistful of Monads》
+-- walk_the_line.lua — Learn You a Haskell《A Fistful of Monads》走钢丝
 -- https://learnyouahaskell.github.io/a-fistful-of-monads.html
--- 用本库的 Maybe + 元表糖（>> / ..）复现 Pierre 走钢丝示例。
+--
+-- 用本库 Maybe + 元表糖（>> ≈ >>=，.. ≈ >>）复现 Pierre 示例：
+--   Pole = (左鸟数, 右鸟数)；两侧相差 ≥ 4 则摔下（Nothing）。
+-- 在仓库根目录执行：lua examples/walk_the_line.lua
 
 package.path = "src/?.lua;" .. package.path
 
 local Maybe = require("maybe")
 
 -- type Birds = Int
--- type Pole = (Birds, Birds)  →  { left, right }
+-- type Pole = (Birds, Birds)  →  Lua 里用 { left, right }
 
 local function showPole(pole)
   return string.format("(%d,%d)", pole[1], pole[2])
@@ -22,6 +25,7 @@ local function showMaybePole(mp)
 end
 
 -- landLeft :: Birds -> Pole -> Maybe Pole
+-- 左端落 n 只鸟；失衡则 Nothing
 local function landLeft(n)
   return function(pole)
     local left, right = pole[1], pole[2]
@@ -45,7 +49,7 @@ local function landRight(n)
   end
 end
 
--- banana :: Pole -> Maybe Pole
+-- banana :: Pole -> Maybe Pole  —— 踩香蕉皮，强制失败
 local function banana(_pole)
   return Maybe.Nothing()
 end
@@ -88,6 +92,7 @@ say("return (0,0) >>= landLeft 1 >>= banana >>= landRight 1", slip)
 
 print("\n=== 用 ..（Haskell 的 >>）插入 Nothing ===")
 -- return (0,0) >>= landLeft 1 >> Nothing >>= landRight 1
+-- 注意：Lua 里 .. 优先级需用括号保证先 bind 再序列
 local peel = (Maybe.Just({ 0, 0 }) >> landLeft(1))
   .. Maybe.Nothing()
   >> landRight(1)

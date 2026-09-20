@@ -1,4 +1,10 @@
--- Status / Result monad: { tag = "ok"|"err", value?|error? }
+-- status.lua — Status / Result 单子（成功或带错误信息的失败）
+--
+-- 类似 Maybe，但失败分支携带 error 载荷（对照 Haskell Either e a / Result）：
+--   Ok v   ≈  { tag = "ok",  value = v }
+--   Err e  ≈  { tag = "err", error = e }
+--
+-- bind 遇 Err 原样短路（保留错误）；Ok 则把 value 交给 f。
 
 local monad = require("monad")
 

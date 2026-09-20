@@ -1,6 +1,12 @@
 #!/usr/bin/env lua
--- Monad law tests + Cont-based CPS coro demo assertions.
--- Exit non-zero on failure.
+-- tests/run.lua — 单子定律 + 符号糖 + Cont CPS 协程断言
+--
+-- 对每个 monad 检查三条定律（在样本上）：
+--   左单位：  unit(a) >>= f      ≡  f(a)
+--   右单位：  m >>= unit         ≡  m
+--   结合律：  (m >>= f) >>= g    ≡  m >>= (λx. f(x) >>= g)
+-- Cont / State 等「函数形」值经 run 抽成可比较的普通数据再 eq。
+-- 失败则非零退出。在仓库根目录执行：lua tests/run.lua
 
 package.path = "src/?.lua;" .. package.path
 
@@ -13,6 +19,7 @@ local Coro = require("coro")
 
 local failures = 0
 
+-- 浅结构相等；忽略元表；函数形代理比 _fn 引用
 local function eq(a, b)
   if type(a) ~= type(b) then return false end
   if type(a) ~= "table" then return a == b end
@@ -52,7 +59,7 @@ local function assert_true(cond, msg)
 end
 
 ------------------------------------------------------------
--- Helper: check left/right identity + associativity for a monad
+-- 定律助手：run 把 monadic 值规范成可比较结果（默认恒等）
 ------------------------------------------------------------
 local function test_laws(name, M, samples, f, g, run)
   run = run or function(x) return x end
@@ -76,7 +83,7 @@ local function test_laws(name, M, samples, f, g, run)
 end
 
 ------------------------------------------------------------
--- Maybe
+-- Maybe：定律 + Nothing 短路 + >> / .. / 模块调用
 ------------------------------------------------------------
 do
   local f = function(x) return Maybe.Just(x + 1) end
@@ -99,7 +106,7 @@ do
 end
 
 ------------------------------------------------------------
--- List
+-- List：定律 + 展平 + 符号糖
 ------------------------------------------------------------
 do
   local f = function(x) return { x, x + 1 } end
@@ -118,7 +125,7 @@ do
 end
 
 ------------------------------------------------------------
--- State
+-- State：定律（run 成 {a,s}）+ get/put/modify + 符号糖
 ------------------------------------------------------------
 do
   local f = function(x)
@@ -157,7 +164,7 @@ do
 end
 
 ------------------------------------------------------------
--- Status
+-- Status：定律 + Err 短路 + 符号糖
 ------------------------------------------------------------
 do
   local f = function(x) return Status.Ok(x + 1) end
@@ -174,7 +181,7 @@ do
 end
 
 ------------------------------------------------------------
--- Cont
+-- Cont：定律（runCont 恒等续延）+ runCont / 符号糖
 ------------------------------------------------------------
 do
   local f = function(x) return Cont.unit(x + 1) end
@@ -207,7 +214,7 @@ do
 end
 
 ------------------------------------------------------------
--- Coro (Cont-based CPS)
+-- Coro：单次/两次 yield、无 yield、以及 >> 混用
 ------------------------------------------------------------
 do
   -- Simple: yield once then return

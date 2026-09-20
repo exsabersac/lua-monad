@@ -1,4 +1,11 @@
--- Maybe monad: { tag = "just"|"nothing", value? }
+-- maybe.lua — Maybe 单子（可失败计算）
+--
+-- 对应 Haskell Data.Maybe / 教学里的 Maybe a：
+--   Just v   ≈  { tag = "just", value = v }
+--   Nothing  ≈  { tag = "nothing" }
+--
+-- bind 在 Nothing 上短路（不调用续函数）；Just 则把 value 交给 f。
+-- 值表经 makeMonad.wrap 挂上元表，支持 >> / .. / Maybe(x)。
 
 local monad = require("monad")
 
@@ -33,7 +40,7 @@ local M = monad.makeMonad({
   end,
 })
 
--- Constructors return operable (metatable-wrapped) values
+-- 构造器返回已 wrap 的可操作值（Just 走 unit；Nothing 需手动 wrap）
 M.Just = M.unit
 M.Nothing = function()
   return M.wrap(Nothing())
