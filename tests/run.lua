@@ -1368,6 +1368,56 @@ do
   assert_true(nconn >= 1, "cancel saw connect")
 end
 
+
+------------------------------------------------------------
+-- fx：map_parallel 有限并发池
+------------------------------------------------------------
+do
+  local fx = require("fx")
+  local sched = require("fx_sched")
+
+  -- 空列表
+  local r0 = fx.run(fx.map_parallel({}, function(_x, _i) return Cont.unit(1) end))
+  assert_true(r0.ok and #r0.value == 0, "map_parallel empty")
+
+  -- 顺序
+  local r_ord = fx.run(fx.map_parallel({ "a", "b", "c" }, function(item, i)
+    return Cont.unit(item .. tostring(i))
+  end, { concurrency = 2 }))
+  assert_true(r_ord.ok, "map_parallel order ok")
+  assert_eq(r_ord.value[1], "a1", "map_parallel [1]")
+  assert_eq(r_ord.value[2], "b2", "map_parallel [2]")
+  assert_eq(r_ord.value[3], "c3", "map_parallel [3]")
+
+  -- 墙钟：6 × wait(0.03), concurrency=2 → ≈ 3 批 ≈ 0.09，串行 ≈ 0.18
+  local t0 = sched.now()
+  local r_wall = fx.run(fx.map_parallel({ 1, 2, 3, 4, 5, 6 }, function(x, _i)
+    return fx.wait(0.03) >> function(_)
+      return Cont.unit(x * 10)
+    end
+  end, { concurrency = 2 }))
+  local elapsed = sched.now() - t0
+  assert_true(r_wall.ok, "map_parallel wall ok")
+  assert_eq(r_wall.value[1], 10, "map_parallel wall val1")
+  assert_eq(r_wall.value[6], 60, "map_parallel wall val6")
+  assert_true(elapsed < 0.15, "map_parallel wall < 0.15 got " .. tostring(elapsed))
+  assert_true(elapsed >= 0.07, "map_parallel wall >= 0.07 got " .. tostring(elapsed))
+
+  -- for_each_parallel
+  local n = 0
+  local r_fe = fx.run(fx.for_each_parallel({ 1, 2 }, function(_x, _i)
+    n = n + 1
+    return Cont.unit(false)
+  end, { concurrency = 1 }))
+  assert_true(r_fe.ok and r_fe.value == true and n == 2, "for_each_parallel")
+
+  -- concurrency < 1 应报错
+  local ok_c, err_c = pcall(function()
+    fx.map_parallel({ 1 }, function(x) return Cont.unit(x) end, { concurrency = 0 })
+  end)
+  assert_true(not ok_c, "concurrency >= 1 enforced")
+end
+
 ------------------------------------------------------------
 io.stdout:write("\n")
 if failures > 0 then

@@ -7,7 +7,8 @@
 --   3. fx.stop / fx.fail 走 Coro Answer 终态（Stopped / Failed），中止管道而不再调 handler。
 --   4. fx.when_all / fx.when_any 把并行组合编成 yield；由调度器时间轮并发驱动（对齐 C# WhenAll/WhenAny）。
 --   5. fx.fork / fx.join / fx.join_handles：非结构化并发（先 fork，中间可做别的事，再 join）。
---   6. 这不是真实网络/UI；默认 handlers 只是 mock，便于演示与测试。
+--   6. fx.map_parallel：有限并发池（滑动窗口 fork/join，结果按输入顺序）。
+--   7. 这不是真实网络/UI；默认 handlers 只是 mock，便于演示与测试。
 --
 -- 重要区分：
 --   Cont 上的 Coro.yield ≠ Lua 原生 coroutine.yield。
@@ -129,6 +130,85 @@ function fx.join_handles(handles)
   assert(type(handles) == "table", "fx.join_handles: expected array of handles")
   return Coro.yield({ kind = "join_handles", handles = handles }) >> function(values)
     return Cont.unit(values)
+  end
+end
+
+------------------------------------------------------------
+-- 有限并发池（map_parallel）
+------------------------------------------------------------
+
+-- map_parallel : {item,...} → (item,index → Cont Answer a) → opts? → Cont Answer {a,...}
+-- opts.concurrency（默认 4，须 >= 1）：同时在飞的 worker 数上限
+-- 结果数组与 items 下标对齐（同 when_all）
+-- 实现：滑动窗口 — 先 fork 最多 N 个，按启动顺序 join；每完成一个再启动下一个
+function fx.map_parallel(items, worker, opts)
+  assert(type(items) == "table", "fx.map_parallel: items must be an array")
+  assert(type(worker) == "function", "fx.map_parallel: worker must be function(item, index) → Cont Answer")
+  opts = opts or {}
+  local concurrency = opts.concurrency
+  if concurrency == nil then
+    concurrency = 4
+  end
+  assert(type(concurrency) == "number" and concurrency >= 1,
+    "fx.map_parallel: opts.concurrency must be >= 1")
+
+  local n = #items
+  if n == 0 then
+    return Cont.unit({})
+  end
+
+  -- queue: { {handle=h, index=i}, ... } 按启动顺序；results[i] = worker 返回值
+  local function start_one(i)
+    return fx.fork(worker(items[i], i)) >> function(h)
+      return Cont.unit({ handle = h, index = i })
+    end
+  end
+
+  -- 填满窗口后，join 队首；再尝试 fork 下一个，递归直至队列空
+  local function step(next_i, queue, results)
+    -- 尽量填满至 concurrency
+    local function fill(ni, q)
+      if #q >= concurrency or ni > n then
+        return Cont.unit({ ni = ni, q = q })
+      end
+      return start_one(ni) >> function(entry)
+        local q2 = {}
+        for j = 1, #q do
+          q2[j] = q[j]
+        end
+        q2[#q2 + 1] = entry
+        return fill(ni + 1, q2)
+      end
+    end
+
+    return fill(next_i, queue) >> function(st)
+      local ni, q = st.ni, st.q
+      if #q == 0 then
+        return Cont.unit(results)
+      end
+      local head = q[1]
+      local rest = {}
+      for j = 2, #q do
+        rest[#rest + 1] = q[j]
+      end
+      return fx.join(head.handle) >> function(v)
+        local results2 = {}
+        for j = 1, n do
+          results2[j] = results[j]
+        end
+        results2[head.index] = v
+        return step(ni, rest, results2)
+      end
+    end
+  end
+
+  return step(1, {}, {})
+end
+
+-- for_each_parallel：同 map_parallel，但丢弃各 worker 返回值，最终 Cont.unit(true)
+function fx.for_each_parallel(items, worker, opts)
+  return fx.map_parallel(items, worker, opts) >> function(_vals)
+    return Cont.unit(true)
   end
 end
 

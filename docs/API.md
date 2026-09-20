@@ -251,6 +251,8 @@ end
 | `fx.fork(ma)` / `fx.spawn` | Cont：yield `{kind="fork",task}`；resume → handle `{id=number}`（≈ `Task.Run`） |
 | `fx.join(handle)` | Cont：yield `{kind="join",handle}`；resume → 子任务 Done 值；Failed/Stopped 传播 |
 | `fx.join_handles(handles)` | Cont：yield `{kind="join_handles",handles}`；resume → values（顺序与 handle 列表一致） |
+| `fx.map_parallel(items, worker, opts?)` | 有限并发：`worker(item,index)→Cont Answer a`；`opts.concurrency` 默认 4（>=1）；结果按输入顺序 |
+| `fx.for_each_parallel(items, worker, opts?)` | 同 `map_parallel`，丢弃返回值，最终 `true` |
 | `fx.run_parallel(tasks, handlers?, opts?)` | 顶层并行；`opts.mode="all"|"any"`；经 session 时间轮 |
 | `fx.run_all` / `fx.run_any` | `run_parallel` 别名 |
 | `fx.run(ma, handlers?, opts?)` | nursery session 驱动整段管道；`opts.cancel`；**始终**返回结果表 |
