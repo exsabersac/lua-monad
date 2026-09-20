@@ -129,4 +129,12 @@ function M.shift(f)
   end)
 end
 
+-- withEnv：延迟加载 cont_env，避免 cont ↔ cont_env 循环 require。
+-- 首次调用后 Cont.withEnv 会被替换为真正的实现（cont_env 加载时也会挂载）。
+function M.withEnv(body)
+  local withEnv = require("cont_env").withEnv
+  M.withEnv = withEnv
+  return withEnv(body)
+end
+
 return M

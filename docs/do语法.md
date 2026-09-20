@@ -133,3 +133,8 @@ end
 ```
 mdo: 第 19 行: do 块最后一行须为 monadic 表达式（不能是 NAME <- EXPR）
 ```
+
+## 与 Cont.withEnv 的关系
+
+`@mdo` 是**通用** do 预处理（任意 monad）。若只需在 **Cont** 里按定义顺序自动 `>>` 拼步骤，用运行时 [`Cont.withEnv`](Cont环境组合.md)（默认收集、无 ContPipe），二者互补，不要混成同一套 API。
+
