@@ -106,7 +106,11 @@ unit(a)      = function(k) return k(a) end
 bind(ma, f)  = function(k) return ma(function(a) return f(a)(k) end) end
 ```
 
-另有 `callCC` 与 `runCont`。
+另有 `runCont` / `evalCont`、`mapCont` / `withCont`、`callCC`，以及教学用定界续延 `reset` / `shift`。
+
+- `mapCont` 改造答案；`withCont` 改造续延（二者 `f` 类型不同，见 API 文档）。
+- `callCC` 的 `escape` 可做提前退出（abort 风格），示例：`examples/cont_callcc.lua`。
+- CPS 串联示例：`examples/cont_cps_basics.lua`。
 
 ## Cont → CPS 协程
 
@@ -122,8 +126,13 @@ API：
 - `Coro.yield(v)` — 挂起并交出 `v`；`resume` 时把新值送回
 - `Coro.start(ma)` — 以「最终值包成 Done」为顶层续延启动
 - `Coro.resume(y, b)` — 把 `b` 喂给挂起的 `cont`
+- `Coro.step(answer, value)` — Done 透传；Yielded 则 resume
+- `Coro.run(ma, handler)` — 自动循环，handler 提供每次 resume 输入
+- `Coro.collect(ma)` — 收集全部 yield 载荷，→ `yields, final`
 
 适合教学：看清「yield = 捕获当前续延」的本质。也可与 Cont 的 `>>` 混用。设计上的三层划分见 [`docs/设计说明.md`](docs/设计说明.md)。
+
+生成器 / 交互示例：`examples/coro_generator.lua`、`examples/coro_interactive.lua`。
 
 ## Walk the line（LYAH）
 
@@ -152,6 +161,12 @@ lua examples/demo.lua
 
 # LYAH Walk the line（Maybe 走钢丝）
 lua examples/walk_the_line.lua
+
+# Cont / CPS 协程示例
+lua examples/cont_callcc.lua
+lua examples/cont_cps_basics.lua
+lua examples/coro_generator.lua
+lua examples/coro_interactive.lua
 ```
 
 `package.path` 已在脚本里加上 `src/?.lua`，请在**仓库根目录**执行。
@@ -169,7 +184,11 @@ lua-monad/
   src/coro.lua               # Cont-based CPS coro
   tests/run.lua              # 定律 + 糖 + coro 断言
   examples/demo.lua
-  examples/walk_the_line.lua # LYAH Maybe 示例
+  examples/walk_the_line.lua   # LYAH Maybe 示例
+  examples/cont_callcc.lua     # callCC 提前退出
+  examples/cont_cps_basics.lua # CPS 加法/阶乘/定界续延
+  examples/coro_generator.lua  # yield 1..n + collect/run
+  examples/coro_interactive.lua# yield 请求 / resume 回答
   docs/设计说明.md
   docs/API.md
   README.md

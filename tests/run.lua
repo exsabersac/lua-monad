@@ -258,6 +258,82 @@ do
 end
 
 ------------------------------------------------------------
+-- Cont：evalCont / mapCont / withCont / callCC 提前退出 / shift+reset
+------------------------------------------------------------
+do
+  assert_eq(Cont.evalCont(Cont.unit(7)), 7, "Cont evalCont")
+
+  -- mapCont：改造答案 r（在恒等续延下对结果 +1）
+  local mapped = Cont.mapCont(function(r) return r + 1 end, Cont.unit(10))
+  assert_eq(Cont.evalCont(mapped), 11, "Cont mapCont")
+
+  -- withCont：变换续延本身；f(k) 先对输入加倍再交给原 k
+  local with = Cont.withCont(function(k)
+    return function(a)
+      return k(a * 2)
+    end
+  end, Cont.unit(5))
+  assert_eq(Cont.evalCont(with), 10, "Cont withCont")
+
+  -- callCC 提前退出：escape(42) 后的 unit(999) 不会影响结果
+  local early = Cont.callCC(function(escape)
+    return Cont.unit(1) >> function(_)
+      return escape(42) >> function(_)
+        return Cont.unit(999)
+      end
+    end
+  end)
+  assert_eq(Cont.evalCont(early), 42, "Cont callCC early exit")
+
+  -- 定界续延：reset(shift(λk. unit(eval(k3)+eval(k4))) >>= λx. unit(x*2)) == 14
+  local delimited = Cont.bind(
+    Cont.shift(function(k)
+      return Cont.unit(Cont.evalCont(k(3)) + Cont.evalCont(k(4)))
+    end),
+    function(x)
+      return Cont.unit(x * 2)
+    end
+  )
+  assert_eq(Cont.reset(delimited), 14, "Cont shift/reset delimited")
+end
+
+------------------------------------------------------------
+-- Coro：step / run / collect
+------------------------------------------------------------
+do
+  local body = Cont.bind(Coro.yield(10), function(resume_val)
+    return Cont.unit(resume_val + 100)
+  end)
+
+  -- step：Yielded → resume；Done → 原样
+  local a1 = Coro.start(body)
+  assert_true(Coro.isYielded(a1), "coro step start Yielded")
+  local a2 = Coro.step(a1, 5)
+  assert_true(Coro.isDone(a2) and a2.value == 105, "coro step resume Done")
+  local a3 = Coro.step(a2, 999)
+  assert_true(Coro.isDone(a3) and a3.value == 105, "coro step Done passthrough")
+
+  -- run：handler 提供 resume 输入
+  local final = Coro.run(body, function(yv)
+    assert_eq(yv, 10, "coro run yield payload")
+    return 5
+  end)
+  assert_eq(final, 105, "coro run final")
+
+  -- collect：记录 yields，resume 用 true
+  local gen = Cont.bind(Coro.yield(1), function(_)
+    return Cont.bind(Coro.yield(2), function(_)
+      return Cont.bind(Coro.yield(3), function(_)
+        return Cont.unit("ok")
+      end)
+    end)
+  end)
+  local yields, fin = Coro.collect(gen)
+  assert_eq(yields, { 1, 2, 3 }, "coro collect yields")
+  assert_eq(fin, "ok", "coro collect final")
+end
+
+------------------------------------------------------------
 io.stdout:write("\n")
 if failures > 0 then
   io.stderr:write(failures .. " failure(s)\n")

@@ -96,8 +96,15 @@
 |------|------|
 | `unit(a)` / `Cont(a)` | `λk. k(a)` |
 | `bind(ma, f)` | `λk. ma(λa. f(a)(k))` |
-| `runCont(ma, k)` | 以续延 `k` 执行 |
-| `callCC(f)` | `f(escape)`；`escape(a)` 跳出到当前外层续延 |
+| `runCont(ma, k)` | 以续延 `k` 执行 → `r` |
+| `evalCont(ma)` | `runCont(ma, id)`；答案类型需与值可对齐 |
+| `mapCont(f, ma)` | `(r→r) → Cont r a → Cont r a`；`λk. f(c(k))`，改造**答案** |
+| `withCont(f, ma)` | `((b→r)→(a→r)) → Cont r a → Cont r b`；`λk. c(f(k))`，改造**续延** |
+| `callCC(f)` | `f(escape)`；`escape(a)` 跳出到进入 callCC 时的外层续延（abort 风格） |
+| `reset(ma)` | 定界提示：等同 `evalCont(ma)`（`Cont a a → a`） |
+| `shift(f)` | 定界捕获：`f` 收到 `k`，`evalCont(k(x))` 为定界续延作用于 `x` |
+
+`mapCont` vs `withCont`：前者 `f` 包在跑完之后的结果上；后者 `f` 先变换续延再交给计算。示例见 `examples/cont_cps_basics.lua`、`examples/cont_callcc.lua`。
 
 ---
 
@@ -112,14 +119,20 @@
 | `yield(v)` | → `Cont Answer b`；挂起并交出 `v` |
 | `start(ma)` | 跑 Cont，顶层续延包成 `Done` |
 | `resume(y, b)` | 将 `b` 喂给 `y.cont` |
+| `step(answer, value)` | Done 原样返回；Yielded 则 `resume` |
+| `run(ma, handler)` | 循环：Yielded 时 `handler(yielded)` 得 resume 输入；返回最终 Done 值 |
+| `collect(ma)` | 记录每次 yield 载荷，resume 用 `true`；→ `yields, final` |
 | `Coro.Cont` | 对 `cont` 模块的引用 |
 
-典型循环：
+典型循环（手动）：
 
 ```lua
 local step = Coro.start(body)
 while Coro.isYielded(step) do
   step = Coro.resume(step, reply)
+  -- 或：step = Coro.step(step, reply)
 end
 -- step.tag == "done"
 ```
+
+驱动助手：`Coro.run` / `Coro.collect`（见 `examples/coro_generator.lua`、`examples/coro_interactive.lua`）。
