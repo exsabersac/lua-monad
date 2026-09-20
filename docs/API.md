@@ -235,21 +235,25 @@ end
 
 ---
 
-## `fx` — `src/fx.lua`
+## `fx` — `src/fx.lua`（并行见 `fx_sched.lua`）
 
 教学用效果层（同步写法 / 异步效果）。依赖 Cont + Coro；**非**真实网络/UI，**非**原生 coroutine。
 
 | 函数 | 说明 |
 |------|------|
-| `fx.wait(seconds)` | yield `{ kind="wait", seconds }`；resume 后 `Cont.unit(true)` |
+| `fx.wait(seconds)` | yield `{ kind="wait", seconds }`；resume 后 `Cont.unit(true)`（≈ `Task.Delay`） |
 | `fx.connect(host, opts?)` | yield `{ kind="connect", host, opts? }`；resume 值为连接结果表 |
 | `fx.click(target)` | yield `{ kind="click", target }`；resume 值为点击结果表 |
 | `fx.stop(reason?)` | → `Coro.stop`；管道中止为 `Stopped` |
 | `fx.fail(err)` / `fx.throw` | → `Coro.fail`；管道失败为 `Failed` |
-| `fx.run(ma, handlers?, opts?)` | 按 `kind` 分派；`opts.cancel` 为函数或 `{cancelled=…}`；**始终**返回结果表 |
+| `fx.when_all(mas)` / `fx.join_all` | Cont：yield `{kind="when_all",tasks}`；resume → values 数组（≈ `Task.WhenAll`） |
+| `fx.when_any(mas)` / `fx.join_any` | Cont：yield `{kind="when_any",tasks}`；resume → `{value,index}`（≈ `Task.WhenAny`） |
+| `fx.run_parallel(tasks, handlers?, opts?)` | 顶层并行；`opts.mode="all"|"any"`；时间轮调度 wait |
+| `fx.run_all` / `fx.run_any` | `run_parallel` 别名 |
+| `fx.run(ma, handlers?, opts?)` | 按 `kind` 分派；`when_*` 走调度器；`opts.cancel`；**始终**返回结果表 |
 | `fx.try(ma, handlers?, opts)` | 同 `run`；`opts.on_fail` / `opts.on_stop` 可恢复 |
 
-`fx.run` 结果表：`{ok=true,value}` \| `{ok=false,stopped=true,reason}` \| `{ok=false,failed=true,error}`。  
+`fx.run` 结果表：`{ok=true,value}` \| `{ok=true,values}` \| `{ok=true,value,index}` \| `{ok=false,stopped=true,reason}` \| `{ok=false,failed=true,error}`。  
 旧代码若假定 `fx.run` 直接返回业务值，请改为 `result.value`（破坏性变更）。
 
 详见 [异步效果同步写法.md](./异步效果同步写法.md)。

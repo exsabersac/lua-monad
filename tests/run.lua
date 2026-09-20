@@ -1194,6 +1194,94 @@ do
 end
 
 ------------------------------------------------------------
+-- fx：when_all / when_any / run_parallel / cancel / Failed
+------------------------------------------------------------
+do
+  local fx = require("fx")
+
+  local instant = {
+    wait = function(req) return true end,
+    connect = function(req) return { ok = true, host = req.host } end,
+    click = function(req) return { ok = true, target = req.target } end,
+  }
+
+  -- when_all 结果顺序
+  local r_all = fx.run_all({
+    Cont.unit("a"),
+    Cont.unit("b"),
+    Cont.unit("c"),
+  }, instant)
+  assert_true(r_all.ok, "run_all ok")
+  assert_eq(r_all.values[1], "a", "when_all order[1]")
+  assert_eq(r_all.values[2], "b", "when_all order[2]")
+  assert_eq(r_all.values[3], "c", "when_all order[3]")
+
+  -- Cont 组合子 when_all
+  local r_wa = fx.run(fx.when_all({
+    fx.connect("h1"),
+    fx.click("btn"),
+    Cont.unit(42),
+  }), instant)
+  assert_true(r_wa.ok, "fx.when_all via run ok")
+  assert_eq(r_wa.value[1].host, "h1", "when_all connect")
+  assert_eq(r_wa.value[2].target, "btn", "when_all click")
+  assert_eq(r_wa.value[3], 42, "when_all unit")
+
+  -- when_any 胜者
+  local r_any = fx.run_any({
+    fx.wait(0.05) >> function(_) return Cont.unit("slow") end,
+    fx.wait(0.01) >> function(_) return Cont.unit("fast") end,
+  }, nil) -- 真实时间轮
+  assert_true(r_any.ok, "run_any ok")
+  assert_eq(r_any.index, 2, "when_any winner index")
+  assert_eq(r_any.value, "fast", "when_any winner value")
+
+  local r_any_c = fx.run(fx.when_any({
+    Cont.unit("only"),
+  }), instant)
+  assert_true(r_any_c.ok, "when_any Cont ok")
+  assert_eq(r_any_c.value.index, 1, "when_any Cont index")
+  assert_eq(r_any_c.value.value, "only", "when_any Cont value")
+
+  -- cancel 在并行中
+  local token = { cancelled = false }
+  local nconn = 0
+  local cancel_h = {
+    connect = function(req)
+      nconn = nconn + 1
+      token.cancelled = true
+      return { ok = true, host = req.host }
+    end,
+    wait = function(req) return true end,
+  }
+  -- 两路：一路 connect（会置 cancelled），一路长 wait；调度器在下一轮检查 cancel
+  local r_can = fx.run_all({
+    fx.connect("x") >> function(_)
+      return fx.wait(0.05) >> function(_) return Cont.unit(1) end
+    end,
+    fx.wait(0.05) >> function(_) return Cont.unit(2) end,
+  }, cancel_h, { cancel = token })
+  assert_true(r_can.stopped and r_can.reason == "cancelled", "parallel cancel")
+  assert_true(nconn >= 1, "parallel cancel saw connect")
+
+  -- Failed 中止 when_all
+  local r_fail = fx.run_all({
+    Cont.unit(1),
+    fx.fail("boom"),
+    Cont.unit(3),
+  }, instant)
+  assert_true(r_fail.failed and r_fail.error == "boom", "when_all Failed aborts")
+  assert_eq(r_fail.index, 2, "when_all Failed index")
+
+  -- 并行 wait wall clock（宽松）
+  local t0 = os.clock()
+  local r_par = fx.run_all({ fx.wait(0.04), fx.wait(0.04) }, nil)
+  local elapsed = os.clock() - t0
+  assert_true(r_par.ok, "parallel wait ok")
+  assert_true(elapsed < 0.075, "parallel wait wall < 0.075 got " .. tostring(elapsed))
+end
+
+------------------------------------------------------------
 io.stdout:write("\n")
 if failures > 0 then
   io.stderr:write(failures .. " failure(s)\n")

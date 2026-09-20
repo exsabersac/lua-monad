@@ -13,7 +13,7 @@
 
 1. [CPS 设计与工作原理](docs/CPS设计与原理.md) — Cont、callCC、定界续延、协程三层模型  
 2. [Cont 环境组合](docs/Cont环境组合.md) — `withEnv`、属性、`AfterStep`  
-3. [异步效果同步写法](docs/异步效果同步写法.md) — `fx.wait` / `connect` / `click`  
+3. [异步效果同步写法](docs/异步效果同步写法.md) — `fx.wait` / `connect` / `click`；**并行** `when_all`/`when_any`（C# WhenAll/WhenAny）  
 4. [设计说明](docs/设计说明.md) · [API 参考](docs/API.md)
 
 需要 **Lua 5.4+**；在仓库根目录执行示例（脚本已设置 `package.path`）。
@@ -152,8 +152,10 @@ local value = result.value  -- fx.run 返回结构化结果表
 
 亦支持 `fx.stop` / `fx.fail`、`opts.cancel` 取消令牌，以及 Cont 层 `Cont.throw`/`Cont.catch`。
 
+**并行（对齐 C# `Task.WhenAll` / `WhenAny`）**：`fx.when_all` / `fx.when_any`（Cont 组合子）与 `fx.run_all` / `fx.run_any`（顶层驱动）；wait 由 [`src/fx_sched.lua`](src/fx_sched.lua) 时间轮并发，不串行忙等。C# 对照表见 [异步效果同步写法](docs/异步效果同步写法.md)。
+
 文档：[异步效果同步写法](docs/异步效果同步写法.md)。  
-示例：`fx_wait_click_flow.lua` · `fx_custom_handlers.lua` · `fx_with_attrs.lua` · `fx_stop_cancel.lua` · `fx_fail_catch.lua` · `cont_catch_throw.lua`。
+示例：`fx_wait_click_flow.lua` · `fx_custom_handlers.lua` · `fx_with_attrs.lua` · `fx_stop_cancel.lua` · `fx_fail_catch.lua` · `fx_when_all.lua` · `fx_when_any.lua` · `fx_parallel_pipeline.lua` · `cont_catch_throw.lua`。
 
 ---
 
@@ -177,11 +179,14 @@ lua examples/cont_env_pipe.lua
 lua examples/cont_env_attrs_after_step.lua
 lua examples/cont_env_coro_mix.lua
 
-# 异步效果 / 停止与异常
+# 异步效果 / 停止与异常 / 并行 WhenAll·WhenAny
 lua examples/fx_wait_click_flow.lua
 lua examples/fx_custom_handlers.lua
 lua examples/fx_stop_cancel.lua
 lua examples/fx_fail_catch.lua
+lua examples/fx_when_all.lua
+lua examples/fx_when_any.lua
+lua examples/fx_parallel_pipeline.lua
 lua examples/cont_catch_throw.lua
 ```
 
@@ -216,7 +221,8 @@ lua-monad/
   src/cont.lua          # Cont：unit/bind/callCC/mapCont/shift…
   src/cont_env.lua      # withEnv + 属性 + AfterStep
   src/coro.lua          # CPS 协程 Done|Yielded|Stopped|Failed
-  src/fx.lua            # wait/connect/click/stop/fail + fx.run
+  src/fx.lua            # wait/connect/click/stop/fail/when_all|any + fx.run
+  src/fx_sched.lua      # 并行时间轮（WhenAll/WhenAny）
   src/monad.lua         # makeMonad + 元表糖
   src/{maybe,list,state,status,identity,reader,writer,rws,mdo}.lua
   docs/CPS设计与原理.md
