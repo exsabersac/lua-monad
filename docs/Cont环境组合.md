@@ -33,7 +33,9 @@ assert(Cont.evalCont(pipe(3)) == 8)  -- (3+1)*2
 | 同名再定义 | **原地替换**该名对应步骤，不改变相对次序 |
 | 非函数赋值 | 普通字段，**不进**管道（数字/表等辅助数据 ok） |
 | 助手函数 | 步内 `local function`；或 `__Helper__()` / `__NotStep__()` 后再赋函数（存 env 不进管道）；未标注则挂到 env 的函数一律当步骤 |
-| 零步骤 | 返回恒等管道，等价于 `Cont.unit` |
+| `init` / `__Init__` | 固定名 `init`/`__init__`，或 `__Init__()` 标注：非步骤；管道前按定义序执行，`init(x) → Cont`（可改写输入） |
+| `finally` / `__Finally__` | 固定名 `finally`/`__final__`，或 `__Finally__()` 标注：非步骤；会话退出时按定义序清理（见下） |
+| 零步骤 | 返回恒等管道，等价于 `Cont.unit`；若仅有 init/finally 仍包生命周期 |
 | 返回值 | `composed(x) → Cont`；另在 env 上 `rawset` `pipe` / `compose` 指向同一函数（body 返回后可读） |
 
 等价展开：
@@ -61,6 +63,10 @@ composed(x) = Cont.unit(x) >> step1 >> step2 >> ... >> stepN
 ```text
 cont_env.withEnv(body) → composed
 Cont.withEnv(body)     → composed   -- 同实现
+cont_env.with_finally(ma, cleanup) → Cont
+Cont.finally(ma, cleanup)          -- 同实现
+cont_env.init_finally(ma, init?, cleanup?) → Cont
+Cont.init_finally(...)             -- 同实现
 ```
 
 - `body(env)`：用户把步骤写到 `env`（参数名常取 `_ENV`，以便 `function name` 语法写入 env）。
@@ -166,6 +172,34 @@ end)
 | `__Require__(pred[, on_fail])` | 步前：若 `not pred(x)`，返回 `on_fail(x)` 或默认 `Cont.unit({tag="rejected", value=x})`；否则 `step(x)` |
 | `__Trace__([label])` | 步前/步后 `print`，不改变值；`label` 可选（默认 `"trace"`） |
 | `__Catch__(handler)` | `Cont.catch(step(x), handler)`；步内 `Cont.throw` / Lua error |
+| `__Init__()` | 下一函数为 **init**（非步骤）：管道前执行；同固定名 `init` / `__init__` |
+| `__Finally__()` | 下一函数为 **finally**（非步骤）：退出时清理；同固定名 `finally` / `__final__` |
+
+### init / finally 生命周期
+
+```text
+composed(x) =
+  inits（定义序，每步 init(v) → Cont，可改写 v）
+  >> steps（>> 链）
+  — 退出时 → cleanups（定义序，finally(outcome) → Cont）
+```
+
+`outcome` 形状：
+
+| status | 字段 | 何时 |
+|--------|------|------|
+| `"done"` | `value` | 成功（`evalCont` / Coro `Done`） |
+| `"failed"` | `error` | `Cont.throw`（经本层拦截）或 Coro/fx `Failed` |
+| `"stopped"` | `reason` | Coro/fx `Stopped`（含 `fx.stop`） |
+
+约定：
+
+- 清理 Cont 跑完后**传播原结果**（成功值 / Failed / Stopped）。
+- 若 cleanup 自身 `Cont.throw` 或返回 `Failed`，**覆盖**为该失败（教学简规）。
+- `Cont.finally(ma, cleanup)` / `Cont.init_finally(ma, init?, cleanup?)` 可在 withEnv 外使用（`cont_env.with_finally` / `init_finally` 同实现）。
+- Yielded 挂起时**不**跑 finally；直到该根 Cont 真正到达 Done|Stopped|Failed。
+
+可执行示例：[`examples/cont_env_finally.lua`](../examples/cont_env_finally.lua)。
 
 多个属性可叠在同一函数前：按**排队顺序**依次把包装器折到目标上。例如：
 
@@ -237,6 +271,7 @@ end)
 | [`examples/cont_env_attrs_timeout.lua`](../examples/cont_env_attrs_timeout.lua) | `__Timeout__` 合作式超时（含自定义 `on_timeout`） |
 | [`examples/cont_env_attrs_retry.lua`](../examples/cont_env_attrs_retry.lua) | `__Retry__` 用原输入重试 |
 | [`examples/cont_env_attrs_require_trace.lua`](../examples/cont_env_attrs_require_trace.lua) | `__Require__` + `__Trace__` |
+| [`examples/cont_env_finally.lua`](../examples/cont_env_finally.lua) | `init`/`finally`、`__Init__`/`__Finally__`；成功 / throw / Coro.stop / fx.stop |
 
 ### Timeout / Retry / Require / Trace 速览
 

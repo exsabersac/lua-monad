@@ -197,12 +197,30 @@ function M.protect(ma)
   end)
 end
 
--- withEnv：延迟加载 cont_env，避免 cont ↔ cont_env 循环 require。
--- 首次调用后 Cont.withEnv 会被替换为真正的实现（cont_env 加载时也会挂载）。
+-- withEnv / finally / init_finally：延迟加载 cont_env，避免循环 require。
+-- 首次调用后会被替换为真正实现（cont_env 加载时也会挂载到 Cont）。
 function M.withEnv(body)
-  local withEnv = require("cont_env").withEnv
-  M.withEnv = withEnv
-  return withEnv(body)
+  local ce = require("cont_env")
+  M.withEnv = ce.withEnv
+  M.finally = ce.with_finally
+  M.init_finally = ce.init_finally
+  return ce.withEnv(body)
+end
+
+function M.finally(ma, cleanup)
+  local ce = require("cont_env")
+  M.withEnv = ce.withEnv
+  M.finally = ce.with_finally
+  M.init_finally = ce.init_finally
+  return ce.with_finally(ma, cleanup)
+end
+
+function M.init_finally(ma, init, cleanup)
+  local ce = require("cont_env")
+  M.withEnv = ce.withEnv
+  M.finally = ce.with_finally
+  M.init_finally = ce.init_finally
+  return ce.init_finally(ma, init, cleanup)
 end
 
 return M

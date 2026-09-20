@@ -1008,6 +1008,177 @@ end
 
 
 ------------------------------------------------------------
+-- Cont.withEnv init / finally 生命周期
+------------------------------------------------------------
+do
+  local cont_env = require("cont_env")
+  local tostring = tostring
+
+  -- 成功：init → step → finally；finally 不是步骤
+  -- （_ENV 作参数时自由名查 env；勿在步内裸用 assert/type，除非 chunk 局部）
+  local log = {}
+  local pipe = Cont.withEnv(function(_ENV)
+    function init(x)
+      log[#log + 1] = "i"
+      return Cont.unit(x + 1)
+    end
+    function step(x)
+      log[#log + 1] = "s"
+      return Cont.unit(x * 2)
+    end
+    function finally(outcome)
+      log[#log + 1] = "f:" .. outcome.status
+      if outcome.value ~= 8 then
+        return Cont.throw("bad outcome value")
+      end
+      return Cont.unit(true)
+    end
+  end)
+  assert_eq(Cont.evalCont(pipe(3)), 8, "init/finally success value")
+  assert_eq(log[1], "i", "init first")
+  assert_eq(log[2], "s", "step middle")
+  assert_eq(log[3], "f:done", "finally on done")
+
+  -- finally 单独存在不是步骤（恒等 + 清理）
+  log = {}
+  local only_f = Cont.withEnv(function(_ENV)
+    function finally(outcome)
+      log[#log + 1] = "f"
+      return Cont.unit(true)
+    end
+  end)
+  assert_eq(Cont.evalCont(only_f(9)), 9, "finally-only == unit")
+  assert_eq(log[1], "f", "finally-only ran")
+
+  -- Cont.throw：finally 先跑，再外层 catch
+  log = {}
+  local boom = Cont.withEnv(function(_ENV)
+    function bad(_)
+      return Cont.throw("x")
+    end
+    function finally(outcome)
+      log[#log + 1] = "fail:" .. tostring(outcome.error)
+      return Cont.unit(true)
+    end
+  end)
+  local caught = Cont.evalCont(Cont.catch(boom(1), function(e)
+    return Cont.unit("c:" .. e)
+  end))
+  assert_eq(caught, "c:x", "finally + Cont.catch value")
+  assert_eq(log[1], "fail:x", "finally on Cont.throw")
+
+  -- Coro.stop / Failed
+  log = {}
+  local stop_p = Cont.withEnv(function(_ENV)
+    function a(_)
+      return Coro.stop("r")
+    end
+    function b(_)
+      log[#log + 1] = "no"
+      return Cont.unit(1)
+    end
+    function finally(outcome)
+      log[#log + 1] = "stop:" .. tostring(outcome.reason)
+      return Cont.unit(true)
+    end
+  end)
+  local st, payload = Coro.runEx(stop_p(0), function()
+    return true
+  end)
+  assert_eq(st, "stopped", "finally Coro.stop status")
+  assert_eq(payload, "r", "finally Coro.stop reason")
+  assert_eq(log[1], "stop:r", "finally on Stopped")
+
+  log = {}
+  local fail_p = Cont.withEnv(function(_ENV)
+    function a(_)
+      return Coro.fail("e")
+    end
+    function finally(outcome)
+      log[#log + 1] = "failed:" .. tostring(outcome.error)
+      return Cont.unit(true)
+    end
+  end)
+  st, payload = Coro.runEx(fail_p(0), function()
+    return true
+  end)
+  assert_eq(st, "failed", "finally Coro.fail status")
+  assert_eq(log[1], "failed:e", "finally on Failed")
+
+  -- __Init__ / __Finally__ 标注
+  log = {}
+  local marked = Cont.withEnv(function(_ENV)
+    __Init__()
+    function open(x)
+      log[#log + 1] = "open"
+      return Cont.unit(x)
+    end
+    function work(x)
+      log[#log + 1] = "work"
+      return Cont.unit(x + 1)
+    end
+    __Finally__()
+    function close(outcome)
+      log[#log + 1] = "close:" .. outcome.status
+      return Cont.unit(true)
+    end
+  end)
+  assert_eq(Cont.evalCont(marked(1)), 2, "__Init__/__Finally__ value")
+  assert_eq(log[1], "open", "__Init__ ran")
+  assert_eq(log[2], "work", "step ran")
+  assert_eq(log[3], "close:done", "__Finally__ ran")
+
+  -- 固定名 finally 与 __Finally__ 并存：定义序
+  log = {}
+  local multi = Cont.withEnv(function(_ENV)
+    function step(x)
+      return Cont.unit(x)
+    end
+    function finally(outcome)
+      log[#log + 1] = "a"
+      return Cont.unit(true)
+    end
+    __Finally__()
+    function other(outcome)
+      log[#log + 1] = "b"
+      return Cont.unit(true)
+    end
+  end)
+  Cont.evalCont(multi(0))
+  assert_eq(log[1], "a", "multi cleanup order 1")
+  assert_eq(log[2], "b", "multi cleanup order 2")
+
+  -- Cont.finally / init_finally 独立 API
+  local n = 0
+  local m = Cont.finally(Cont.unit(5), function(o)
+    n = n + 1
+    assert(o.status == "done" and o.value == 5)
+    return Cont.unit(true)
+  end)
+  assert_eq(Cont.evalCont(m), 5, "Cont.finally value")
+  assert_eq(n, 1, "Cont.finally ran")
+
+  n = 0
+  local m2 = Cont.init_finally(
+    Cont.unit(3),
+    function()
+      n = n + 10
+      return Cont.unit(true)
+    end,
+    function()
+      n = n + 1
+      return Cont.unit(true)
+    end
+  )
+  assert_eq(Cont.evalCont(m2), 3, "Cont.init_finally value")
+  assert_eq(n, 11, "Cont.init_finally init+finally")
+
+  assert_true(cont_env.with_finally == Cont.finally or type(cont_env.with_finally) == "function",
+    "cont_env.with_finally exported")
+end
+
+
+------------------------------------------------------------
 -- Cont.throw / Cont.catch / Cont.protect
 ------------------------------------------------------------
 do

@@ -12,10 +12,12 @@
 --   1. 函数赋值 → 管道步骤；同名再赋 → 原地替换（保留首次出现次序）；可用 AfterStep/BeforeStep 拓扑重排。
 --   2. 非函数赋值 → 普通字段，不进管道（常量/表 ok）。
 --   3. 助手：步内 local；或 `__Helper__()` / `__NotStep__()` 标注后再赋函数（存 env 但不进 >>）。
---   4. 零步骤时 composed ≡ Cont.unit（恒等管道）。
---   5. 返回值为主；env.pipe / env.compose 指向同一 composed 便于自省。
---   6. body 返回后会对步骤表做快照；之后再改 env 不影响已返回的 composed。
---   7. 属性（`__Name__()`）排队，作用于**紧随其后**的那个函数赋值（PLoop 风格）。
+--   4. 固定名 `init` / `__init__` 与属性 `__Init__`：非步骤；在管道前按定义序跑一遍（可改写输入）。
+--   5. 固定名 `finally` / `__final__` 与属性 `__Finally__`：非步骤；在管道/协程会话退出时跑清理。
+--   6. 零步骤时 composed ≡ Cont.unit（恒等管道）；若仅有 init/finally 仍包一层生命周期。
+--   7. 返回值为主；env.pipe / env.compose 指向同一 composed 便于自省。
+--   8. body 返回后会对步骤表做快照；之后再改 env 不影响已返回的 composed。
+--   9. 属性（`__Name__()`）排队，作用于**紧随其后**的那个函数赋值（PLoop 风格）。
 
 local Cont = require("cont")
 
@@ -38,7 +40,13 @@ local ATTR_KEYS = {
   __AfterStep__ = true,
   __BeforeStep__ = true,
   __Catch__ = true,
+  __Finally__ = true,
+  __Init__ = true,
 }
+
+-- 固定名：写入 env 时自动视为 init / finally（非管道步骤）
+local INIT_NAMES = { init = true, __init__ = true }
+local FINALLY_NAMES = { finally = true, __final__ = true }
 
 ------------------------------------------------------------
 -- 独立属性构造器：cont_env.attrs.__X__(...)(step) → new_step
@@ -205,8 +213,218 @@ local function wrap_catch(handler)
   end
 end
 
+------------------------------------------------------------
+-- init / finally 生命周期（Cont 层；Coro Answer 感知）
+------------------------------------------------------------
+-- finally(outcome) → Cont|value
+--   outcome = { status="done", value=a }
+--            | { status="failed", error=e }
+--            | { status="stopped", reason=r }
+-- init(x) → Cont|value：可改写进入管道的输入；普通值经 Cont.unit 包装。
+--
+-- 清理失败教学规则：cleanup 若 Cont.throw / 返回 Failed，则**覆盖**原结果为 Failed；
+-- 成功清理后传播原 Done 值 / Stopped / Failed。
+
+local function ensure_cont(x)
+  if x == nil then
+    return Cont.unit(true)
+  end
+  if type(x) == "table" and x._fn ~= nil then
+    -- Cont 代理（makeMonad 函数形）
+    return x
+  end
+  if type(x) == "function" then
+    return Cont.wrap(x)
+  end
+  return Cont.unit(x)
+end
+
+local function answer_tag(x)
+  if type(x) == "table" then
+    return x.tag
+  end
+  return nil
+end
+
+--- with_finally(ma, cleanup) → Cont
+-- 在 Cont 正常成功、Cont.throw（经本层 catch）、以及 Coro Answer 的
+-- Done|Stopped|Failed 终态上调用 cleanup；Yielded 时推迟到真正终态。
+function cont_env.with_finally(ma, cleanup)
+  assert(type(cleanup) == "function", "with_finally: cleanup must be a function")
+
+  return Cont.wrap(function(outer_k)
+    local cleaned = false
+    local fail_handling = false
+
+    local function drain_cleanup_result(res, after)
+      local tag = answer_tag(res)
+      if type(res) == "table" and res.__finally_continue then
+        return after()
+      end
+      if tag == "yielded" then
+        return {
+          tag = "yielded",
+          value = res.value,
+          cont = function(b)
+            return drain_cleanup_result(res.cont(b), after)
+          end,
+        }
+      end
+      if tag == "failed" or tag == "stopped" then
+        -- 清理自身终态覆盖原结果
+        return res
+      end
+      if tag == "done" then
+        return after()
+      end
+      return after()
+    end
+
+    local function run_cleanup_then(outcome, after)
+      if cleaned then
+        return after()
+      end
+      cleaned = true
+      local cu = ensure_cont(cleanup(outcome))
+      -- cleanup 内 Cont.throw → Failed 覆盖
+      local protected = Cont.catch(cu, function(err)
+        return Cont.wrap(function(_k)
+          return { tag = "failed", error = err }
+        end)
+      end)
+      local res = Cont.unwrap(protected)(function(_v)
+        return { __finally_continue = true }
+      end)
+      return drain_cleanup_result(res, after)
+    end
+
+    local function wrap_result(res)
+      local tag = answer_tag(res)
+      if tag == "yielded" then
+        return {
+          tag = "yielded",
+          value = res.value,
+          cont = function(b)
+            return wrap_result(res.cont(b))
+          end,
+        }
+      end
+      if tag == "stopped" then
+        return run_cleanup_then({ status = "stopped", reason = res.reason }, function()
+          return res
+        end)
+      end
+      if tag == "failed" then
+        return run_cleanup_then({ status = "failed", error = res.error }, function()
+          return res
+        end)
+      end
+      if tag == "done" then
+        -- 成功路径通常已在 outer_k 前清理；此处兜底（例如内层已包成 Done）
+        return run_cleanup_then({ status = "done", value = res.value }, function()
+          return res
+        end)
+      end
+      return res
+    end
+
+    local body = Cont.catch(ma, function(err)
+      -- Cont.catch 在 handler 再 Cont.throw 且无外层时，pcall 会重入 handler；
+      -- 用 fail_handling 直接 error，避免死循环。
+      if fail_handling then
+        error("uncaught Cont.throw: " .. tostring(err), 0)
+      end
+      fail_handling = true
+      return Cont.wrap(function(k)
+        return run_cleanup_then({ status = "failed", error = err }, function()
+          return Cont.unwrap(Cont.throw(err))(k)
+        end)
+      end)
+    end)
+
+    local res = Cont.unwrap(body)(function(a)
+      return run_cleanup_then({ status = "done", value = a }, function()
+        return outer_k(a)
+      end)
+    end)
+    return wrap_result(res)
+  end)
+end
+
+--- init_finally(ma, init?, cleanup?) → Cont
+-- init() → Cont|value，先跑完再执行 ma；cleanup 同 with_finally。
+-- 若只需其一，另一个传 nil。
+function cont_env.init_finally(ma, init, cleanup)
+  local m = ma
+  if init ~= nil then
+    assert(type(init) == "function", "init_finally: init must be a function or nil")
+    m = Cont.bind(ensure_cont(init()), function(_)
+      return ma
+    end)
+  end
+  if cleanup ~= nil then
+    assert(type(cleanup) == "function", "init_finally: cleanup must be a function or nil")
+    m = cont_env.with_finally(m, cleanup)
+  end
+  return m
+end
+
+--- 组合 a→Cont：先 inits（定义序，可改写 x），再 steps，退出时 cleanups。
+local function compose_lifecycle(order, steps, inits, cleanups)
+  return function(x)
+    local m = Cont.unit(x)
+    for _, item in ipairs(inits) do
+      local fn = item.fn
+      m = m >> function(v)
+        return ensure_cont(fn(v))
+      end
+    end
+    for _, name in ipairs(order) do
+      local step = steps[name]
+      if type(step) == "function" then
+        m = m >> step
+      end
+    end
+    if #cleanups == 0 then
+      return m
+    end
+    local cleanup_fns = cleanups
+    return cont_env.with_finally(m, function(outcome)
+      local c = Cont.unit(true)
+      for _, item in ipairs(cleanup_fns) do
+        local fn = item.fn
+        c = c >> function(_)
+          return ensure_cont(fn(outcome))
+        end
+      end
+      return c
+    end)
+  end
+end
+
+local function upsert_named(list, key, fn)
+  for i, item in ipairs(list) do
+    if item.name == key then
+      list[i] = { name = key, fn = fn }
+      return
+    end
+  end
+  list[#list + 1] = { name = key, fn = fn }
+end
+
+local function remove_named(list, key)
+  for i = #list, 1, -1 do
+    if list[i].name == key then
+      table.remove(list, i)
+      break
+    end
+  end
+end
+
 -- Helper sentinel：独立使用时标记「非步骤」；withEnv 内用队列 flag
 local HELPER_SENTINEL = { __attr_helper = true }
+local FINALLY_SENTINEL = { __attr_finally = true }
+local INIT_SENTINEL = { __attr_init = true }
 
 cont_env.attrs = {
   --- 标记下一函数为助手（独立 API 返回 sentinel；env 内排队）
@@ -215,6 +433,14 @@ cont_env.attrs = {
   end,
   __NotStep__ = function()
     return HELPER_SENTINEL
+  end,
+  --- 标记下一函数为 finally 清理（非步骤；会话退出时跑）
+  __Finally__ = function()
+    return FINALLY_SENTINEL
+  end,
+  --- 标记下一函数为 init（非步骤；管道前跑，可改写输入）
+  __Init__ = function()
+    return INIT_SENTINEL
   end,
   --- __Wrap__(wrapper)(step) → new_step
   __Wrap__ = wrap_wrap,
@@ -238,6 +464,7 @@ cont_env.attrs = {
   __BeforeStep__ = make_before_step,
   --- __Catch__(handler)(step) → Cont.catch(step(x), handler)
   __Catch__ = wrap_catch,
+  -- __Finally__ / __Init__ 见上（sentinel；独立调用不包装 step）
 }
 
 cont_env.DEFAULT_UNTIL_MAX = DEFAULT_UNTIL_MAX
@@ -256,15 +483,22 @@ local function compose_steps(order, steps)
   end
 end
 
---- 从 pending 队列折叠包装器到 value；返回 new_fn, is_helper, after_list, before_list
+--- 从 pending 队列折叠包装器到 value
+-- 返回 new_fn, is_helper, is_finally, is_init, after_list, before_list
 local function apply_pending(pending, value)
   local is_helper = false
+  local is_finally = false
+  local is_init = false
   local fn = value
   local after_list = {}
   local before_list = {}
   for _, item in ipairs(pending) do
     if item.kind == "helper" then
       is_helper = true
+    elseif item.kind == "finally" then
+      is_finally = true
+    elseif item.kind == "init" then
+      is_init = true
     elseif item.kind == "wrap" then
       fn = item.apply(fn)
     elseif item.kind == "after_step" then
@@ -273,7 +507,7 @@ local function apply_pending(pending, value)
       before_list[#before_list + 1] = item.name
     end
   end
-  return fn, is_helper, after_list, before_list
+  return fn, is_helper, is_finally, is_init, after_list, before_list
 end
 
 --- 构造挂到 env 上的属性构造器（写入 pending）
@@ -282,12 +516,26 @@ local function make_env_attr_ctors(pending)
     pending[#pending + 1] = { kind = "helper" }
   end
 
+  local function queue_finally()
+    pending[#pending + 1] = { kind = "finally" }
+  end
+
+  local function queue_init()
+    pending[#pending + 1] = { kind = "init" }
+  end
+
   return {
     __Helper__ = function()
       queue_helper()
     end,
     __NotStep__ = function()
       queue_helper()
+    end,
+    __Finally__ = function()
+      queue_finally()
+    end,
+    __Init__ = function()
+      queue_init()
     end,
     __Wrap__ = function(wrapper)
       local apply = wrap_wrap(wrapper)
@@ -448,15 +696,19 @@ end
 --- withEnv(body) → composed
 -- body(env)：在 env 上用 `function name(...) ... end` 或 `env.name = fn` 定义步骤。
 -- 可用 `__Helper__()` / `__Wrap__` / `__Before__` / `__After__` / `__Until__` / `__Timeout__` /
--- `__Retry__` / `__Require__` / `__Trace__` / `__Catch__` / `__AfterStep__` / `__BeforeStep__` 标注下一函数。
--- 返回 composed：a → Cont r z，等价于 foldl (>>) Cont.unit（默认定义序；AfterStep/BeforeStep 拓扑重排）。
+-- `__Retry__` / `__Require__` / `__Trace__` / `__Catch__` / `__AfterStep__` / `__BeforeStep__` /
+-- `__Init__` / `__Finally__` 标注下一函数。
+-- 固定名 `init`/`__init__`、`finally`/`__final__` 亦为非步骤生命周期钩子。
+-- 返回 composed：a → Cont r z；顺序为 inits → steps →（退出时）cleanups。
 function cont_env.withEnv(body)
   assert(type(body) == "function", "withEnv: body must be a function")
 
   local order = {} -- 首次出现的步骤名，保序
   local steps = {} -- name → step 函数（仅管道步骤）
   local constraints = {} -- name → { after = {..}, before = {..} }
-  local data = {} -- 普通字段存储（含助手函数、最终 pipe/compose）
+  local inits = {} -- { {name=, fn=}, ... } 定义序
+  local cleanups = {} -- { {name=, fn=}, ... } 定义序
+  local data = {} -- 普通字段存储（含助手/init/finally 函数、最终 pipe/compose）
   local pending = {} -- 排队中的属性 applicators / helper flags / 顺序约束
   local attr_ctors = make_env_attr_ctors(pending)
 
@@ -475,22 +727,49 @@ function cont_env.withEnv(body)
       end
 
       if type(value) == "function" then
-        local is_helper = false
+        local is_helper, is_finally, is_init = false, false, false
         local after_list, before_list = {}, {}
         if #pending > 0 then
-          value, is_helper, after_list, before_list = apply_pending(pending, value)
+          value, is_helper, is_finally, is_init, after_list, before_list =
+            apply_pending(pending, value)
           clear_pending(pending)
         end
 
-        if is_helper then
-          -- 存到 data，但不进管道；若曾是步骤则移除
+        -- 固定名优先视为 init / finally
+        if INIT_NAMES[key] then
+          is_init = true
+        end
+        if FINALLY_NAMES[key] then
+          is_finally = true
+        end
+
+        local function strip_from_steps()
           if steps[key] ~= nil then
             steps[key] = nil
             remove_from_order(order, key)
           end
           constraints[key] = nil
+        end
+
+        if is_finally then
+          strip_from_steps()
+          remove_named(inits, key)
+          upsert_named(cleanups, key, value)
+          rawset(data, key, value)
+        elseif is_init then
+          strip_from_steps()
+          remove_named(cleanups, key)
+          upsert_named(inits, key, value)
+          rawset(data, key, value)
+        elseif is_helper then
+          -- 存到 data，但不进管道；若曾是步骤则移除
+          strip_from_steps()
+          remove_named(inits, key)
+          remove_named(cleanups, key)
           rawset(data, key, value)
         else
+          remove_named(inits, key)
+          remove_named(cleanups, key)
           if steps[key] == nil then
             -- 若此前是 helper-only，不算「首次步骤」以外的特殊情况：直接加入 order
             order[#order + 1] = key
@@ -513,12 +792,14 @@ function cont_env.withEnv(body)
             2
           )
         end
-        -- 非函数：不当作步骤；若曾是步骤名则从管道移除
+        -- 非函数：不当作步骤；若曾是步骤/init/finally 名则移除
         if steps[key] ~= nil then
           steps[key] = nil
           remove_from_order(order, key)
           constraints[key] = nil
         end
+        remove_named(inits, key)
+        remove_named(cleanups, key)
         rawset(data, key, value)
       end
     end,
@@ -535,14 +816,28 @@ function cont_env.withEnv(body)
   -- 按 AfterStep/BeforeStep 拓扑重排（无约束则保持定义序）
   order = resolve_step_order(order, constraints)
 
-  -- 快照：composed 固定为 body 结束时的步骤序列
+  -- 快照：composed 固定为 body 结束时的步骤 / init / finally 序列
   local order_snap = {}
   local steps_snap = {}
   for i, name in ipairs(order) do
     order_snap[i] = name
     steps_snap[name] = steps[name]
   end
-  local composed = compose_steps(order_snap, steps_snap)
+  local inits_snap = {}
+  for i, item in ipairs(inits) do
+    inits_snap[i] = { name = item.name, fn = item.fn }
+  end
+  local cleanups_snap = {}
+  for i, item in ipairs(cleanups) do
+    cleanups_snap[i] = { name = item.name, fn = item.fn }
+  end
+
+  local composed
+  if #inits_snap == 0 and #cleanups_snap == 0 then
+    composed = compose_steps(order_snap, steps_snap)
+  else
+    composed = compose_lifecycle(order_snap, steps_snap, inits_snap, cleanups_snap)
+  end
 
   -- rawset 避免 pipe/compose 被当成新步骤
   rawset(data, "pipe", composed)
@@ -551,7 +846,10 @@ function cont_env.withEnv(body)
   return composed
 end
 
--- 挂到 Cont，便于 Cont.withEnv(...)；cont.lua 另有延迟转发，避免循环 require
+-- 挂到 Cont，便于 Cont.withEnv / Cont.finally / Cont.init_finally；
+-- cont.lua 另有延迟转发，避免循环 require。
 Cont.withEnv = cont_env.withEnv
+Cont.finally = cont_env.with_finally
+Cont.init_finally = cont_env.init_finally
 
 return cont_env

@@ -174,6 +174,8 @@
 `mapCont` vs `withCont`：前者 `f` 包在跑完之后的结果上；后者 `f` 先变换续延再交给计算。示例见 `examples/cont_cps_basics.lua`、`examples/cont_callcc.lua`、`examples/cont_catch_throw.lua`。
 
 | `withEnv(body)` | 见下节 `cont_env`；亦可 `require("cont_env")` 后使用 |
+| `finally(ma, cleanup)` | 退出时跑 `cleanup(outcome)`；感知 Cont.throw 与 Coro Done\|Stopped\|Failed（见 `cont_env`） |
+| `init_finally(ma, init?, cleanup?)` | 可选 `init()` 先跑，再 `ma`，再 `cleanup` |
 
 ---
 
@@ -183,9 +185,12 @@
 
 | 函数 | 说明 |
 |------|------|
-| `withEnv(body)` | `body(env)` 内写入的函数为步骤；同名替换保序；非函数不当步骤；支持 Helper/Wrap/Before/After/Until/Timeout/Retry/Require/Trace/**AfterStep/BeforeStep** 属性；→ `composed` |
+| `withEnv(body)` | `body(env)` 内写入的函数为步骤；同名替换保序；非函数不当步骤；支持 Helper/Wrap/Before/After/Until/Timeout/Retry/Require/Trace/Catch/**AfterStep/BeforeStep**/**Init/Finally**；固定名 `init`/`finally`；→ `composed` |
 | `Cont.withEnv` | 与上同一实现（`cont_env` 加载时挂载；`cont` 首次调用延迟 require） |
+| `with_finally(ma, cleanup)` / `Cont.finally` | 包装 Cont：成功 / throw / Coro 终态时跑 cleanup |
+| `init_finally(ma, init?, cleanup?)` / `Cont.init_finally` | init 先跑（无参），再 ma，再 cleanup |
 | `attrs.__Helper__` / `__NotStep__` | 独立 API：返回 helper sentinel；env 内调用则排队 |
+| `attrs.__Init__` / `__Finally__` | 独立 API：返回 init/finally sentinel；env 内排队 |
 | `attrs.__Wrap__(w)` | `(w)(step) → new_step` |
 | `attrs.__Before__(pre)` / `__After__(post)` | Cont 包装糖；env 内排队 |
 | `attrs.__AfterStep__(name)` / `__BeforeStep__(name)` | 管道顺序约束（拓扑）；独立 API 返回描述符；env 内排队 |

@@ -4,7 +4,7 @@
 
 - 用 `Cont` 显式传递「算完之后做什么」；
 - 用 `Coro` 把挂起/中止编成 `Done | Yielded | Stopped | Failed`（**不是** Lua 原生 `coroutine` 当业务语义）；
-- 用 `Cont.withEnv` 把一串 CPS 步进函数自动 `>>` 成管道，并可挂 PLoop 风格属性；
+- 用 `Cont.withEnv` 把一串 CPS 步进函数自动 `>>` 成管道，并可挂 PLoop 风格属性（含 `init`/`finally` 生命周期）；
 - 用 `fx` 做「同步写法、异步效果」：等待 / 联网 / 点击经 `Coro.yield` 交给驱动器。
 
 其它实例（Maybe、List、State…）仍保留，作对照与练手，见文末。
@@ -121,7 +121,7 @@ assert(Cont.evalCont(pipe(3)) == 8)  -- (3+1)*2
 `cont_env_pipe.lua` · `cont_env_mutual_pipes.lua` · `cont_env_local_helpers.lua` · `cont_env_pipe_as_step.lua` · `cont_env_callcc.lua` · `cont_env_coro_mix.lua` · `cont_env_data_driven.lua` · `cont_env_fact_pipeline.lua`
 
 **属性：**  
-`cont_env_attrs_helper.lua` · `cont_env_attrs_until.lua` · `cont_env_attrs_before_after.lua` · `cont_env_attrs_after_step.lua` · `cont_env_attrs_timeout.lua` · `cont_env_attrs_retry.lua` · `cont_env_attrs_require_trace.lua`
+`cont_env_attrs_helper.lua` · `cont_env_attrs_until.lua` · `cont_env_attrs_before_after.lua` · `cont_env_attrs_after_step.lua` · `cont_env_attrs_timeout.lua` · `cont_env_attrs_retry.lua` · `cont_env_attrs_require_trace.lua` · `cont_env_finally.lua`
 
 ---
 
@@ -182,6 +182,7 @@ lua examples/coro_interactive.lua
 # withEnv 管道
 lua examples/cont_env_pipe.lua
 lua examples/cont_env_attrs_after_step.lua
+lua examples/cont_env_finally.lua
 lua examples/cont_env_coro_mix.lua
 
 # 异步效果 / 停止与异常 / 并行 WhenAll·WhenAny / Fork·Join
