@@ -6,7 +6,8 @@
 --      Yielded 请求（{ kind=..., ... }）；外部解释器（fx.run 的 handlers）兑现后再 resume。
 --   3. fx.stop / fx.fail 走 Coro Answer 终态（Stopped / Failed），中止管道而不再调 handler。
 --   4. fx.when_all / fx.when_any 把并行组合编成 yield；由调度器时间轮并发驱动（对齐 C# WhenAll/WhenAny）。
---   5. 这不是真实网络/UI；默认 handlers 只是 mock，便于演示与测试。
+--   5. fx.fork / fx.join / fx.join_handles：非结构化并发（先 fork，中间可做别的事，再 join）。
+--   6. 这不是真实网络/UI；默认 handlers 只是 mock，便于演示与测试。
 --
 -- 重要区分：
 --   Cont 上的 Coro.yield ≠ Lua 原生 coroutine.yield。
@@ -95,6 +96,43 @@ fx.join_all = fx.when_all
 fx.join_any = fx.when_any
 
 ------------------------------------------------------------
+-- Fork / Join（非结构化并发；与 when_all 互补）
+------------------------------------------------------------
+
+-- fork : Cont Answer a → Cont Answer Handle
+-- 启动子 Cont 并发；父任务立刻拿到不透明 handle（{ id=number }）
+-- Yield: { kind="fork", task=ma }
+function fx.fork(ma)
+  assert(ma ~= nil, "fx.fork: expected Cont Answer")
+  return Coro.yield({ kind = "fork", task = ma }) >> function(handle)
+    return Cont.unit(handle)
+  end
+end
+
+fx.spawn = fx.fork -- 别名：≈ Task.Run / 启动子任务
+
+-- join : Handle → Cont Answer a
+-- 等到该 fork 子任务 Done，resume 其值；Failed/Stopped 向父传播
+-- Yield: { kind="join", handle=h }
+function fx.join(handle)
+  assert(type(handle) == "table" and handle.id ~= nil,
+    "fx.join: expected handle {id=...}")
+  return Coro.yield({ kind = "join", handle = handle }) >> function(value)
+    return Cont.unit(value)
+  end
+end
+
+-- join_handles : { Handle, ... } → Cont Answer { a, ... }
+-- 按 handle 列表顺序收集结果（≈ when_all 的 values 顺序）
+-- Yield: { kind="join_handles", handles=hs }
+function fx.join_handles(handles)
+  assert(type(handles) == "table", "fx.join_handles: expected array of handles")
+  return Coro.yield({ kind = "join_handles", handles = handles }) >> function(values)
+    return Cont.unit(values)
+  end
+end
+
+------------------------------------------------------------
 -- 默认 mock handlers（可被 fx.run 的 handlers? 覆盖）
 ------------------------------------------------------------
 
@@ -105,7 +143,7 @@ end
 -- 默认处理器：打印日志 + mock 成功结果
 -- kind="stop" 可选：若业务误用 Coro.yield{kind="stop"}，handlers 可识别；
 -- 正常请用 fx.stop（直接 Stopped，不经过 handler）。
--- when_all / when_any 由 fx.run 特殊路径调度，不经本表。
+-- when_all / when_any / fork / join 由 session 调度器处理，不经本表。
 local default_handlers = {
   wait = function(req)
     local secs = req.seconds or 0
@@ -166,31 +204,6 @@ local function failed_result(err)
   return { ok = false, failed = true, error = err }
 end
 
-local function answer_to_result(answer)
-  if Coro.isDone(answer) then
-    return ok_result(answer.value)
-  elseif Coro.isStopped(answer) then
-    return stopped_result(answer.reason)
-  elseif Coro.isFailed(answer) then
-    return failed_result(answer.error)
-  end
-  error("fx: unexpected answer tag=" .. tostring(answer and answer.tag), 2)
-end
-
--- opts.cancel : function()→boolean  或  token 表 { cancelled=false }
-local function is_cancelled(cancel)
-  if cancel == nil then
-    return false
-  end
-  if type(cancel) == "function" then
-    return not not cancel()
-  end
-  if type(cancel) == "table" then
-    return not not cancel.cancelled
-  end
-  error("fx.run: opts.cancel must be function or {cancelled=...}", 2)
-end
-
 ------------------------------------------------------------
 -- 并行顶层 API
 ------------------------------------------------------------
@@ -239,54 +252,19 @@ end
 -- run / try
 ------------------------------------------------------------
 
--- 兑现 when_all / when_any：调用调度器，成功则返回 resume 载荷；失败则返回 result 表
-local function fulfill_parallel(req, handlers, opts)
-  local mode = (req.kind == "when_any") and "any" or "all"
-  local sub = Sched.run_parallel(req.tasks, handlers, {
-    cancel = opts.cancel,
-    verbose_wait = opts.verbose_wait,
-  }, mode)
-  if not sub.ok then
-    return nil, sub
-  end
-  if mode == "all" then
-    return sub.values, nil
-  end
-  return { value = sub.value, index = sub.index }, nil
-end
-
 -- run : Cont Answer a → handlers? → opts? → result
--- 每次 Yielded 在调用 handler **之前**检查 cancel；已取消则 Stopped("cancelled")。
--- when_all / when_any：走并行调度器（共享 handlers 与 cancel）。
+-- 整段管道由 nursery session 驱动（与 when_all / fork·join 同一调度器）：
+--   · 单任务时 wait 仍走 handlers.wait（兼容瞬时 mock）
+--   · 多任务 / fork 后 wait 走时间轮（墙钟 deadline）
+--   · opts.cancel 协作取消父任务与未完成子任务
 -- 始终返回结构化 result 表（破坏性变更：旧代码请用 result.value）。
 function fx.run(ma, handlers, opts)
   opts = opts or {}
   local h = merge_handlers(handlers)
-  local cancel = opts.cancel
-
-  local answer = Coro.start(ma)
-  while Coro.isYielded(answer) do
-    if is_cancelled(cancel) then
-      return stopped_result("cancelled")
-    end
-    local req = answer.value
-    assert(type(req) == "table" and req.kind ~= nil,
-      "fx.run: expected yield payload table with .kind")
-
-    if req.kind == "when_all" or req.kind == "when_any" then
-      local payload, err_result = fulfill_parallel(req, h, opts)
-      if err_result then
-        return err_result
-      end
-      answer = Coro.resume(answer, payload)
-    else
-      local handler = h[req.kind]
-      assert(handler, "fx.run: no handler for kind=" .. tostring(req.kind))
-      local next_input = handler(req)
-      answer = Coro.resume(answer, next_input)
-    end
-  end
-  return answer_to_result(answer)
+  return Sched.run_session(ma, h, {
+    cancel = opts.cancel,
+    verbose_wait = opts.verbose_wait,
+  })
 end
 
 -- try : Cont Answer a → handlers? → opts → result

@@ -1284,6 +1284,91 @@ do
 end
 
 ------------------------------------------------------------
+-- fx：fork / join / join_handles
+------------------------------------------------------------
+do
+  local fx = require("fx")
+  local sched = require("fx_sched")
+
+  local instant = {
+    wait = function(req) return true end,
+    connect = function(req) return { ok = true, host = req.host } end,
+    click = function(req) return { ok = true, target = req.target } end,
+  }
+
+  -- fork + join 取值
+  local r_fj = fx.run(
+    fx.fork(Cont.unit(99)) >> function(h)
+      return fx.join(h)
+    end,
+    instant
+  )
+  assert_true(r_fj.ok, "fork+join ok")
+  assert_eq(r_fj.value, 99, "fork+join value")
+
+  -- join_handles 顺序
+  local r_ord = fx.run(
+    fx.fork(Cont.unit("first")) >> function(h1)
+      return fx.fork(Cont.unit("second")) >> function(h2)
+        return fx.join_handles({ h1, h2 })
+      end
+    end,
+    instant
+  )
+  assert_true(r_ord.ok, "join_handles ok")
+  assert_eq(r_ord.value[1], "first", "join_handles order[1]")
+  assert_eq(r_ord.value[2], "second", "join_handles order[2]")
+
+  -- 并行 wall clock：fork 两路 wait 再 join
+  local t0 = sched.now()
+  local r_par = fx.run(
+    fx.fork(fx.wait(0.04) >> function(_) return Cont.unit(1) end) >> function(h1)
+      return fx.fork(fx.wait(0.04) >> function(_) return Cont.unit(2) end) >> function(h2)
+        return fx.join_handles({ h1, h2 })
+      end
+    end,
+    nil
+  )
+  local elapsed = sched.now() - t0
+  assert_true(r_par.ok, "fork/join parallel wait ok")
+  assert_eq(r_par.value[1], 1, "fork/join val1")
+  assert_eq(r_par.value[2], 2, "fork/join val2")
+  assert_true(elapsed < 0.075, "fork/join wall < 0.075 got " .. tostring(elapsed))
+  assert_true(elapsed >= 0.035, "fork/join wall >= 0.035 got " .. tostring(elapsed))
+
+  -- 子 Failed → join 失败
+  local r_fail = fx.run(
+    fx.fork(fx.fail("boom")) >> function(h)
+      return fx.join(h)
+    end,
+    instant
+  )
+  assert_true(r_fail.failed and r_fail.error == "boom", "join Failed propagates")
+
+  -- cancel 在 forked wait 期间
+  local token = { cancelled = false }
+  local nconn = 0
+  local cancel_h = {
+    connect = function(req)
+      nconn = nconn + 1
+      token.cancelled = true
+      return { ok = true, host = req.host }
+    end,
+  }
+  local r_can = fx.run(
+    fx.fork(fx.wait(0.08) >> function(_) return Cont.unit("slow") end) >> function(h)
+      return fx.connect("x") >> function(_)
+        return fx.join(h)
+      end
+    end,
+    cancel_h,
+    { cancel = token }
+  )
+  assert_true(r_can.stopped and r_can.reason == "cancelled", "cancel during forked wait")
+  assert_true(nconn >= 1, "cancel saw connect")
+end
+
+------------------------------------------------------------
 io.stdout:write("\n")
 if failures > 0 then
   io.stderr:write(failures .. " failure(s)\n")

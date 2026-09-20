@@ -248,9 +248,12 @@ end
 | `fx.fail(err)` / `fx.throw` | → `Coro.fail`；管道失败为 `Failed` |
 | `fx.when_all(mas)` / `fx.join_all` | Cont：yield `{kind="when_all",tasks}`；resume → values 数组（≈ `Task.WhenAll`） |
 | `fx.when_any(mas)` / `fx.join_any` | Cont：yield `{kind="when_any",tasks}`；resume → `{value,index}`（≈ `Task.WhenAny`） |
-| `fx.run_parallel(tasks, handlers?, opts?)` | 顶层并行；`opts.mode="all"|"any"`；时间轮调度 wait |
+| `fx.fork(ma)` / `fx.spawn` | Cont：yield `{kind="fork",task}`；resume → handle `{id=number}`（≈ `Task.Run`） |
+| `fx.join(handle)` | Cont：yield `{kind="join",handle}`；resume → 子任务 Done 值；Failed/Stopped 传播 |
+| `fx.join_handles(handles)` | Cont：yield `{kind="join_handles",handles}`；resume → values（顺序与 handle 列表一致） |
+| `fx.run_parallel(tasks, handlers?, opts?)` | 顶层并行；`opts.mode="all"|"any"`；经 session 时间轮 |
 | `fx.run_all` / `fx.run_any` | `run_parallel` 别名 |
-| `fx.run(ma, handlers?, opts?)` | 按 `kind` 分派；`when_*` 走调度器；`opts.cancel`；**始终**返回结果表 |
+| `fx.run(ma, handlers?, opts?)` | nursery session 驱动整段管道；`opts.cancel`；**始终**返回结果表 |
 | `fx.try(ma, handlers?, opts)` | 同 `run`；`opts.on_fail` / `opts.on_stop` 可恢复 |
 
 `fx.run` 结果表：`{ok=true,value}` \| `{ok=true,values}` \| `{ok=true,value,index}` \| `{ok=false,stopped=true,reason}` \| `{ok=false,failed=true,error}`。  
