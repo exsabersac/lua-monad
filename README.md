@@ -37,8 +37,8 @@ local m = monad.makeMonad({ unit = ..., bind = ... })
 
 值形态：
 
-- **表形**（Maybe / List / Status）：直接在值表上 `setmetatable`，保留 `tag`、`value`、数组部分等字段。
-- **函数形**（Cont / State）：包成可调用代理 `{ _fn = f }`（`__call` 转发）；`runCont` / `runState` 等会自动 `unwrap`。也可用 `m.unwrap` / `m.wrap`。
+- **表形**（Maybe / List / Status / Identity / Writer）：直接在值表上 `setmetatable`，保留 `tag`、`value`、`log`、数组部分等字段。
+- **函数形**（Cont / State / Reader / RWS）：包成可调用代理 `{ _fn = f }`（`__call` 转发）；`runCont` / `runState` / `runReader` / `runRWS` 等会自动 `unwrap`。也可用 `m.unwrap` / `m.wrap`。
 
 示例：
 
@@ -95,7 +95,46 @@ local v = Cont.runCont(
 { tag = "err", error = e }
 ```
 
-`Err` 短路，类似 Maybe，但携带错误信息。
+`Err` 短路，类似 Maybe，但携带错误信息。**Status ≈ Either / Result**，故不另建 `Either` 模块。
+
+### Identity — 平凡盒子
+
+```lua
+{ tag = "identity", value = v }
+```
+
+`unit` / `bind` 只包装与取出；用 `runIdentity` 取裸值。教学对照「无额外效应」。示例：`examples/identity_basics.lua`。
+
+### Reader — 只读环境 / 依赖注入
+
+表示成 `function(env) return a end`（对外为可调用代理）。
+
+辅助：`ask` / `asks(f)` / `localEnv(f, ma)`（Haskell `local`；`local` 为 Lua 关键字）/ `runReader(ma, env)`。
+
+适合配置、只读上下文。示例：`examples/reader_config.lua`。
+
+### Writer — 附带日志（Monoid）
+
+```lua
+{ value = a, log = w }
+```
+
+默认 `w` 为 **string**（`""` + `..`）。`tell(s)` 追加日志；`listen` / `pass` / `runWriter` → `value, log`。
+
+- `Writer.makeWriter` / `Writer.withMonoid({ mempty, mappend })` — 自定义 monoid
+- `Writer.WriterList` — 表列表 monoid（`{}` + 数组拼接）
+
+示例：`examples/writer_log.lua`。
+
+### RWS — Reader + Writer + State
+
+`RWS r w s a ≈ r → s → (a, s, w)`（默认 string writer）。
+
+辅助：`ask` / `asks` / `localEnv` / `get` / `put` / `modify` / `tell` / `runRWS` / `evalRWS` / `execRWS`。
+
+### Status ≈ Either（不另建 Either）
+
+`Status` 的 `Ok` / `Err` 已覆盖 Haskell `Either e a` / `Result` 语义（失败带载荷、`Err` 短路）。若只需「左失败 / 右成功」命名，直接用 Status 即可，无需重复模块。
 
 ### Cont — 续延 monad
 
@@ -199,6 +238,11 @@ lua tools/run_mdo.lua examples/do_walk_the_line.mdo
 lua tools/mdo.lua examples/do_maybe_foo.mdo
 lua examples/do_maybe_foo.lua
 
+# Identity / Reader / Writer
+lua examples/identity_basics.lua
+lua examples/reader_config.lua
+lua examples/writer_log.lua
+
 # Cont / CPS 协程示例
 lua examples/cont_callcc.lua
 lua examples/cont_cps_basics.lua
@@ -216,7 +260,11 @@ lua-monad/
   src/maybe.lua
   src/list.lua
   src/state.lua
-  src/status.lua
+  src/status.lua             # ≈ Either / Result（Ok/Err）
+  src/identity.lua
+  src/reader.lua
+  src/writer.lua             # 默认 string + makeWriter / WriterList
+  src/rws.lua                # Reader+Writer+State
   src/cont.lua
   src/coro.lua               # Cont-based CPS coro
   src/mdo.lua                # @mdo 预处理 + loadfile/dofile/loader
@@ -225,6 +273,9 @@ lua-monad/
   tools/run_mdo.lua          # --run 薄包装
   examples/demo.lua
   examples/walk_the_line.lua   # LYAH Maybe 示例
+  examples/identity_basics.lua
+  examples/reader_config.lua
+  examples/writer_log.lua
   examples/cont_callcc.lua     # callCC 提前退出
   examples/cont_cps_basics.lua # CPS 加法/阶乘/定界续延
   examples/coro_generator.lua  # yield 1..n + collect/run

@@ -1,5 +1,5 @@
 #!/usr/bin/env lua
--- tests/run.lua — 单子定律 + 符号糖 + Cont CPS 协程 + mdo 断言
+-- tests/run.lua — 单子定律 + 符号糖 + Cont CPS 协程 + Identity/Reader/Writer/RWS + mdo 断言
 --
 -- 对每个 monad 检查三条定律（在样本上）：
 --   左单位：  unit(a) >>= f      ≡  f(a)
@@ -16,6 +16,10 @@ local State = require("state")
 local Status = require("status")
 local Cont = require("cont")
 local Coro = require("coro")
+local Identity = require("identity")
+local Reader = require("reader")
+local Writer = require("writer")
+local RWS = require("rws")
 
 local failures = 0
 
@@ -331,6 +335,132 @@ do
   local yields, fin = Coro.collect(gen)
   assert_eq(yields, { 1, 2, 3 }, "coro collect yields")
   assert_eq(fin, "ok", "coro collect final")
+end
+
+
+------------------------------------------------------------
+-- Identity：定律 + runIdentity + 符号糖
+------------------------------------------------------------
+do
+  local f = function(x) return Identity.unit(x + 1) end
+  local g = function(x) return Identity.unit(x * 2) end
+  local run = function(ma) return Identity.runIdentity(ma) end
+  test_laws("Identity", Identity, { 0, 1, 7 }, f, g, run)
+
+  assert_eq(Identity.runIdentity(Identity.unit(3) >> f), 4, "Identity >> bind")
+  assert_eq(Identity.runIdentity(Identity.unit(1) .. Identity.unit(99)), 99, "Identity .. sequence")
+  assert_eq(Identity.runIdentity(Identity(5)), 5, "Identity(x) module call")
+end
+
+------------------------------------------------------------
+-- Reader：定律（固定 env）+ ask / asks / localEnv + 符号糖
+------------------------------------------------------------
+do
+  local env0 = { n = 10, name = "alice" }
+  local f = function(x)
+    return Reader.ask() >> function(e)
+      return Reader.unit(x + e.n)
+    end
+  end
+  local g = function(x)
+    return Reader.asks(function(e) return e.n end) >> function(n)
+      return Reader.unit(x * n)
+    end
+  end
+  local run = function(ma)
+    return Reader.runReader(ma, env0)
+  end
+  test_laws("Reader", Reader, { 1, 2 }, f, g, run)
+
+  assert_eq(Reader.runReader(Reader.ask(), env0), env0, "Reader ask")
+  assert_eq(Reader.runReader(Reader.asks(function(e) return e.name end), env0),
+            "alice", "Reader asks")
+
+  local localized = Reader.localEnv(function(e)
+    return { n = e.n * 2, name = e.name }
+  end, Reader.asks(function(e) return e.n end))
+  assert_eq(Reader.runReader(localized, env0), 20, "Reader localEnv")
+
+  local sugar = Reader.unit(3) >> function(x)
+    return Reader.ask() >> function(e)
+      return Reader.unit(x + e.n)
+    end
+  end
+  assert_eq(Reader.runReader(sugar, env0), 13, "Reader >> sugar")
+  assert_eq(Reader.runReader(Reader.unit(1) .. Reader.unit(42), env0), 42, "Reader .. sequence")
+end
+
+------------------------------------------------------------
+-- Writer：定律（比较 value+log）+ tell / listen / pass + WriterList
+------------------------------------------------------------
+do
+  local f = function(x)
+    return Writer.tell("f;") .. Writer.unit(x + 1)
+  end
+  local g = function(x)
+    return Writer.tell("g;") .. Writer.unit(x * 2)
+  end
+  local run = function(ma)
+    local v, w = Writer.runWriter(ma)
+    return { value = v, log = w }
+  end
+  test_laws("Writer", Writer, { 1, 3 }, f, g, run)
+
+  local prog = Writer.tell("a") .. Writer.tell("b") .. Writer.unit(7)
+  local v, w = Writer.runWriter(prog)
+  assert_eq(v, 7, "Writer tell chain value")
+  assert_eq(w, "ab", "Writer tell chain log")
+
+  local listened = Writer.listen(Writer.tell("xy") .. Writer.unit(1))
+  local lv, lw = Writer.runWriter(listened)
+  assert_eq(lv.value, 1, "Writer listen inner value")
+  assert_eq(lv.log, "xy", "Writer listen inner log")
+  assert_eq(lw, "xy", "Writer listen outer log")
+
+  local passed = Writer.pass(Writer.tell("hello") .. Writer.unit({ 9, function(log)
+    return log .. "!"
+  end }))
+  local pv, pw = Writer.runWriter(passed)
+  assert_eq(pv, 9, "Writer pass value")
+  assert_eq(pw, "hello!", "Writer pass transformed log")
+
+  local WL = Writer.WriterList
+  local lp = WL.tell({ "x" }) .. WL.tell({ "y", "z" }) .. WL.unit(true)
+  local lv2, ll = WL.runWriter(lp)
+  assert_eq(lv2, true, "WriterList value")
+  assert_eq(ll, { "x", "y", "z" }, "WriterList log concat")
+end
+
+------------------------------------------------------------
+-- RWS：定律 + ask/get/tell 组合
+------------------------------------------------------------
+do
+  local env0 = { mul = 2 }
+  local f = function(x)
+    return RWS.tell("f;") .. RWS.modify(function(s) return s + 1 end) .. RWS.unit(x + 1)
+  end
+  local g = function(x)
+    return RWS.ask() >> function(e)
+      return RWS.get() >> function(s)
+        return RWS.tell("g;") .. RWS.unit(x * e.mul + s)
+      end
+    end
+  end
+  local run = function(ma)
+    local a, s, w = RWS.runRWS(ma, env0, 0)
+    return { a = a, s = s, w = w }
+  end
+  test_laws("RWS", RWS, { 1, 4 }, f, g, run)
+
+  local prog = RWS.ask() >> function(e)
+    return RWS.get() >> function(s)
+      return RWS.tell("go;") .. RWS.put(s + e.mul) .. RWS.unit(s)
+    end
+  end
+  local a, s, w = RWS.runRWS(prog, env0, 5)
+  assert_eq(a, 5, "RWS ask/get/tell value")
+  assert_eq(s, 7, "RWS put state")
+  assert_eq(w, "go;", "RWS tell log")
 end
 
 

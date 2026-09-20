@@ -5,6 +5,8 @@
 --   Err e  ≈  { tag = "err", error = e }
 --
 -- bind 遇 Err 原样短路（保留错误）；Ok 则把 value 交给 f。
+--
+-- Status ≈ Either：语义已覆盖 Either/Result，故不另建 either.lua，以免重复。
 
 local monad = require("monad")
 

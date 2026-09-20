@@ -69,6 +69,70 @@
 | `bind` | `Err` 原样短路 |
 | `isOk(r)` / `isErr(r)` | 谓词 |
 
+> **Status ≈ Either**：`Ok`/`Err` 已覆盖 `Either e a` / `Result`（失败带载荷并短路）。不另提供 `Either` 模块以免重复。
+
+---
+
+## `Identity` — `src/identity.lua`
+
+值形状：`{ tag="identity", value }`。
+
+| 函数 | 说明 |
+|------|------|
+| `unit(v)` / `Identity(v)` | 包装 |
+| `bind` | `f(ma.value)` |
+| `isIdentity(m)` | 谓词 |
+| `runIdentity(m)` | 取出 `value` |
+
+---
+
+## `Reader` — `src/reader.lua`
+
+裸值：`function(env) return a end`；对外多为可调用代理。
+
+| 函数 | 说明 |
+|------|------|
+| `unit(a)` / `Reader(a)` | 忽略环境，结果为 `a` |
+| `bind` | 共享同一 `env` 串联 |
+| `ask()` | 结果为当前环境 |
+| `asks(f)` | 结果为 `f(env)` |
+| `localEnv(f, ma)` | 在 `f(env)` 下跑 `ma`（Haskell `local`；`local` 为关键字） |
+| `runReader(ma, env)` | → `a` |
+
+---
+
+## `Writer` — `src/writer.lua`
+
+值形状：`{ value=a, log=w }`。默认 string monoid（`""` / `..`）。
+
+| 函数 | 说明 |
+|------|------|
+| `unit(a)` / `Writer(a)` | `{ value=a, log="" }`（或自定义 `mempty`） |
+| `bind` | 拼接左右 `log`（左到右） |
+| `tell(w)` | 追加日志；结果 `nil` |
+| `listen(ma)` | 结果变为 `{ value=a, log=w }`，日志不变 |
+| `pass(ma)` | `ma` 的 value 为 `{a, f}` 或 `{value=a, fn=f}`，用 `f(log)` 改日志 |
+| `runWriter(ma)` | → `value, log` |
+| `execWriter(ma)` | → `log` |
+| `makeWriter` / `withMonoid(monoid)` | 工厂：`{ mempty, mappend }` → 新 Writer 模块 |
+| `WriterList` | 预置表列表 Writer（`{}` + 数组拼接） |
+
+---
+
+## `RWS` — `src/rws.lua`
+
+裸值：`function(env, s) return a, s, w end`（默认 `w` 为 string）；对外为可调用代理。
+
+| 函数 | 说明 |
+|------|------|
+| `unit(a)` / `RWS(a)` | 不改状态、空日志 |
+| `ask` / `asks` / `localEnv` | 同 Reader |
+| `get` / `put` / `modify` | 同 State |
+| `tell(w)` | 追加字符串日志 |
+| `runRWS(ma, env, s0)` | → `a, s, w` |
+| `evalRWS(ma, env, s0)` | → `a` |
+| `execRWS(ma, env, s0)` | → `s, w` |
+
 ---
 
 ## `State` — `src/state.lua`
