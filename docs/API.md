@@ -180,12 +180,16 @@
 
 | 函数 | 说明 |
 |------|------|
-| `withEnv(body)` | `body(env)` 内写入的函数为步骤；同名替换保序；非函数不当步骤；支持 `__Helper__` / `__Wrap__` / `__Before__` / `__After__` / `__Until__` 属性；→ `composed` |
+| `withEnv(body)` | `body(env)` 内写入的函数为步骤；同名替换保序；非函数不当步骤；支持 Helper/Wrap/Before/After/Until/Timeout/Retry/Require/Trace 属性；→ `composed` |
 | `Cont.withEnv` | 与上同一实现（`cont_env` 加载时挂载；`cont` 首次调用延迟 require） |
 | `attrs.__Helper__` / `__NotStep__` | 独立 API：返回 helper sentinel；env 内调用则排队 |
 | `attrs.__Wrap__(w)` | `(w)(step) → new_step` |
 | `attrs.__Before__(pre)` / `__After__(post)` | 糖包装；env 内排队 |
 | `attrs.__Until__(pred[, max])` | 循环直到 `pred`；默认 max=1000 |
+| `attrs.__Timeout__(secs[, on_timeout])` | 合作式超时（步后 `os.clock`）；默认 `{tag="timeout", value, elapsed}` |
+| `attrs.__Retry__(n, pred)` | `pred(a)` 则用原 `x` 重试，最多 `n` 次 |
+| `attrs.__Require__(pred[, on_fail])` | 步前校验；失败默认 `{tag="rejected", value}` |
+| `attrs.__Trace__([label])` | 前后 `print`，值不变 |
 
 示例：`examples/cont_env_pipe.lua`；属性见 `examples/cont_env_attrs_*.lua` 与 [`Cont环境组合.md`](Cont环境组合.md)。
 

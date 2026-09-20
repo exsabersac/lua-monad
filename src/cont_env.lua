@@ -31,6 +31,10 @@ local ATTR_KEYS = {
   __Before__ = true,
   __After__ = true,
   __Until__ = true,
+  __Timeout__ = true,
+  __Retry__ = true,
+  __Require__ = true,
+  __Trace__ = true,
 }
 
 ------------------------------------------------------------
@@ -91,6 +95,91 @@ local function wrap_wrap(wrapper)
   end
 end
 
+-- 合作式超时：步完成后用 os.clock 检查；无法打断同步步中途
+local function wrap_timeout(secs, on_timeout)
+  assert(type(secs) == "number" and secs >= 0, "__Timeout__: secs must be a non-negative number")
+  if on_timeout ~= nil then
+    assert(type(on_timeout) == "function", "__Timeout__: on_timeout must be a function or nil")
+  end
+  return function(step)
+    assert(type(step) == "function", "__Timeout__: step must be a function")
+    return function(x)
+      local t0 = os.clock()
+      return step(x) >> function(a)
+        local elapsed = os.clock() - t0
+        if elapsed > secs then
+          if on_timeout then
+            return on_timeout(a, elapsed)
+          end
+          return Cont.unit({ tag = "timeout", value = a, elapsed = elapsed })
+        end
+        return Cont.unit(a)
+      end
+    end
+  end
+end
+
+-- pred(a) 为真则需重试；始终用原始 x 再跑 step，最多 n 次；最后仍 pred 则返回该 a
+local function wrap_retry(n, pred)
+  assert(type(n) == "number" and n >= 1 and n == math.floor(n), "__Retry__: n must be a positive integer")
+  assert(type(pred) == "function", "__Retry__: pred must be a function")
+  return function(step)
+    assert(type(step) == "function", "__Retry__: step must be a function")
+    return function(x)
+      local function go(attempt)
+        return step(x) >> function(a)
+          if not pred(a) then
+            return Cont.unit(a)
+          elseif attempt >= n then
+            return Cont.unit(a)
+          else
+            return go(attempt + 1)
+          end
+        end
+      end
+      return go(1)
+    end
+  end
+end
+
+-- 步前校验：不满足 pred(x) 则 on_fail(x) 或 {tag="rejected", value=x}
+local function wrap_require(pred, on_fail)
+  assert(type(pred) == "function", "__Require__: pred must be a function")
+  if on_fail ~= nil then
+    assert(type(on_fail) == "function", "__Require__: on_fail must be a function or nil")
+  end
+  return function(step)
+    assert(type(step) == "function", "__Require__: step must be a function")
+    return function(x)
+      if not pred(x) then
+        if on_fail then
+          return on_fail(x)
+        end
+        return Cont.unit({ tag = "rejected", value = x })
+      end
+      return step(x)
+    end
+  end
+end
+
+-- 前后 print，不改变值；label 可选
+local function wrap_trace(label)
+  if label ~= nil then
+    assert(type(label) == "string" or type(label) == "number", "__Trace__: label must be string/number or nil")
+  end
+  local tag = label ~= nil and tostring(label) or "trace"
+  return function(step)
+    assert(type(step) == "function", "__Trace__: step must be a function")
+    return function(x)
+      print(string.format("[%s] before: %s", tag, tostring(x)))
+      return step(x) >> function(a)
+        print(string.format("[%s] after: %s", tag, tostring(a)))
+        return Cont.unit(a)
+      end
+    end
+  end
+end
+
 -- Helper sentinel：独立使用时标记「非步骤」；withEnv 内用队列 flag
 local HELPER_SENTINEL = { __attr_helper = true }
 
@@ -110,6 +199,14 @@ cont_env.attrs = {
   __After__ = wrap_after,
   --- __Until__(pred[, max])(step) → 循环直到 pred；默认 max=1000
   __Until__ = wrap_until,
+  --- __Timeout__(secs[, on_timeout])(step) → 合作式超时（步后检查 os.clock）
+  __Timeout__ = wrap_timeout,
+  --- __Retry__(n, pred)(step) → pred(a) 则用原 x 重试，最多 n 次
+  __Retry__ = wrap_retry,
+  --- __Require__(pred[, on_fail])(step) → 步前校验 x
+  __Require__ = wrap_require,
+  --- __Trace__([label])(step) → 前后 print，值不变
+  __Trace__ = wrap_trace,
 }
 
 cont_env.DEFAULT_UNTIL_MAX = DEFAULT_UNTIL_MAX
@@ -171,6 +268,22 @@ local function make_env_attr_ctors(pending)
       local apply = wrap_until(pred, max)
       pending[#pending + 1] = { kind = "wrap", apply = apply }
     end,
+    __Timeout__ = function(secs, on_timeout)
+      local apply = wrap_timeout(secs, on_timeout)
+      pending[#pending + 1] = { kind = "wrap", apply = apply }
+    end,
+    __Retry__ = function(n, pred)
+      local apply = wrap_retry(n, pred)
+      pending[#pending + 1] = { kind = "wrap", apply = apply }
+    end,
+    __Require__ = function(pred, on_fail)
+      local apply = wrap_require(pred, on_fail)
+      pending[#pending + 1] = { kind = "wrap", apply = apply }
+    end,
+    __Trace__ = function(label)
+      local apply = wrap_trace(label)
+      pending[#pending + 1] = { kind = "wrap", apply = apply }
+    end,
   }
 end
 
@@ -191,7 +304,7 @@ end
 
 --- withEnv(body) → composed
 -- body(env)：在 env 上用 `function name(...) ... end` 或 `env.name = fn` 定义步骤。
--- 可用 `__Helper__()` / `__Wrap__` / `__Before__` / `__After__` / `__Until__` 标注下一函数。
+-- 可用 `__Helper__()` / `__Wrap__` / `__Before__` / `__After__` / `__Until__` / `__Timeout__` / `__Retry__` / `__Require__` / `__Trace__` 标注下一函数。
 -- 返回 composed：a → Cont r z，等价于 foldl (>>) Cont.unit（定义序；同名替换保序）。
 function cont_env.withEnv(body)
   assert(type(body) == "function", "withEnv: body must be a function")

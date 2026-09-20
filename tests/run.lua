@@ -799,6 +799,113 @@ do
 end
 
 ------------------------------------------------------------
+-- Cont.withEnv 属性：Timeout / Retry / Require / Trace
+------------------------------------------------------------
+do
+  local cont_env = require("cont_env")
+  local os = os
+
+  -- Timeout：忙等后超时 → 默认 tag
+  local slow = Cont.withEnv(function(_ENV)
+    __Timeout__(0.001)
+    function busy(x)
+      local t0 = os.clock()
+      while os.clock() - t0 < 0.02 do end
+      return Cont.unit(x + 1)
+    end
+  end)
+  local r = Cont.evalCont(slow(10))
+  assert_eq(r.tag, "timeout", "attr Timeout tag")
+  assert_eq(r.value, 11, "attr Timeout value after step")
+  assert_true(type(r.elapsed) == "number" and r.elapsed > 0.001, "attr Timeout elapsed")
+
+  -- Timeout：未超时原值通过
+  local fast = Cont.withEnv(function(_ENV)
+    __Timeout__(1.0)
+    function add1(x) return Cont.unit(x + 1) end
+  end)
+  assert_eq(Cont.evalCont(fast(5)), 6, "attr Timeout under limit")
+
+  -- Timeout 自定义 on_timeout
+  local custom_t = Cont.withEnv(function(_ENV)
+    __Timeout__(0.001, function(a, elapsed)
+      return Cont.unit({ ok = false, a = a, e = elapsed })
+    end)
+    function busy(x)
+      local t0 = os.clock()
+      while os.clock() - t0 < 0.02 do end
+      return Cont.unit(x)
+    end
+  end)
+  local ct = Cont.evalCont(custom_t(7))
+  assert_true(ct.ok == false and ct.a == 7 and ct.e > 0.001, "attr Timeout on_timeout")
+
+  -- Retry：奇数重试，用原 x
+  local attempts = 0
+  local retry_ok = Cont.withEnv(function(_ENV)
+    __Retry__(5, function(a) return a % 2 ~= 0 end)
+    function unstable(x)
+      attempts = attempts + 1
+      return Cont.unit(x + attempts)
+    end
+  end)
+  attempts = 0
+  assert_eq(Cont.evalCont(retry_ok(0)), 2, "attr Retry succeeds on even")
+  assert_eq(attempts, 2, "attr Retry attempt count")
+
+  -- Retry：始终 pred，返回最后 a
+  attempts = 0
+  local retry_fail = Cont.withEnv(function(_ENV)
+    __Retry__(3, function(a) return true end)
+    function always(x)
+      attempts = attempts + 1
+      return Cont.unit(x + attempts)
+    end
+  end)
+  attempts = 0
+  assert_eq(Cont.evalCont(retry_fail(10)), 13, "attr Retry last a after n")
+  assert_eq(attempts, 3, "attr Retry n attempts")
+
+  -- Require：拒绝（参数名用 env，避免 _ENV 遮蔽 type）
+  local req = Cont.withEnv(function(env)
+    env.__Require__(function(x) return type(x) == "number" and x > 0 end)
+    env.double = function(x) return Cont.unit(x * 2) end
+  end)
+  assert_eq(Cont.evalCont(req(4)), 8, "attr Require pass")
+  local rej = Cont.evalCont(req(-1))
+  assert_eq(rej.tag, "rejected", "attr Require rejected tag")
+  assert_eq(rej.value, -1, "attr Require rejected value")
+
+  -- Require 自定义 on_fail
+  local req2 = Cont.withEnv(function(env)
+    env.__Require__(function(x) return x ~= nil end, function(_x)
+      return Cont.unit("nil!")
+    end)
+    env.id = function(x) return Cont.unit(x) end
+  end)
+  assert_eq(Cont.evalCont(req2(nil)), "nil!", "attr Require on_fail")
+  assert_eq(Cont.evalCont(req2("z")), "z", "attr Require on_fail pass")
+
+  -- Trace：值不变（吞掉 print）
+  local traced = Cont.withEnv(function(_ENV)
+    __Trace__("t")
+    function add1(x) return Cont.unit(x + 1) end
+  end)
+  assert_eq(Cont.evalCont(traced(3)), 4, "attr Trace preserves value")
+
+  -- 独立 attrs
+  local step = function(x) return Cont.unit(x + 1) end
+  assert_eq(Cont.evalCont(cont_env.attrs.__Require__(function(x) return x > 0 end)(step)(2)), 3,
+    "attrs.__Require__ standalone")
+  assert_eq(Cont.evalCont(cont_env.attrs.__Retry__(2, function(a) return false end)(step)(1)), 2,
+    "attrs.__Retry__ standalone no retry")
+  assert_eq(Cont.evalCont(cont_env.attrs.__Trace__("x")(step)(1)), 2,
+    "attrs.__Trace__ standalone")
+  assert_eq(Cont.evalCont(cont_env.attrs.__Timeout__(1)(step)(1)), 2,
+    "attrs.__Timeout__ standalone under limit")
+end
+
+------------------------------------------------------------
 io.stdout:write("\n")
 if failures > 0 then
   io.stderr:write(failures .. " failure(s)\n")

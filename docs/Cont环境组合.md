@@ -150,7 +150,7 @@ end)
 
 不依赖 PLoop。在 `withEnv(body)` 内调用 `__Name__()` **排队**一个属性；**紧接着**赋给 env 的下一个函数即目标（与 PLoop 属性语法同构的运行时版）。
 
-### 内置属性（MVP）
+### 内置属性
 
 | 属性 | 作用 |
 |------|------|
@@ -159,6 +159,10 @@ end)
 | `__Before__(pre)` | 糖：`λx. pre(x) >> step`（`pre : a → Cont r a` 或兼容） |
 | `__After__(post)` | 糖：`λx. step(x) >> post` |
 | `__Until__(pred[, max])` | 每步结果 `a` 若 `pred(a)` 则停，否则把 `a` 再喂给 step；默认 `max=1000` 防死循环 |
+| `__Timeout__(secs[, on_timeout])` | **合作式**超时：`t0=os.clock()`，`step(x) >>` 得 `a` 后若 `elapsed>secs`，则 `on_timeout(a, elapsed)` 或默认 `Cont.unit({tag="timeout", value=a, elapsed})`。**不能**打断同步步中途 |
+| `__Retry__(n, pred)` | `pred(a)` 表示需要重试；始终用**原始** `x` 再跑 `step`，最多 `n` 次；若最后一次仍 `pred` 则返回该 `a` |
+| `__Require__(pred[, on_fail])` | 步前：若 `not pred(x)`，返回 `on_fail(x)` 或默认 `Cont.unit({tag="rejected", value=x})`；否则 `step(x)` |
+| `__Trace__([label])` | 步前/步后 `print`，不改变值；`label` 可选（默认 `"trace"`） |
 
 多个属性可叠在同一函数前：按**排队顺序**依次把包装器折到目标上。例如：
 
@@ -206,6 +210,27 @@ end)
 | [`examples/cont_env_attrs_helper.lua`](../examples/cont_env_attrs_helper.lua) | `__Helper__` vs 误把助手当步骤 |
 | [`examples/cont_env_attrs_until.lua`](../examples/cont_env_attrs_until.lua) | `__Until__` 增长到 ≥ 10 |
 | [`examples/cont_env_attrs_before_after.lua`](../examples/cont_env_attrs_before_after.lua) | `__Before__` / `__After__` 日志与 `cont_env.attrs` |
+| [`examples/cont_env_attrs_timeout.lua`](../examples/cont_env_attrs_timeout.lua) | `__Timeout__` 合作式超时（含自定义 `on_timeout`） |
+| [`examples/cont_env_attrs_retry.lua`](../examples/cont_env_attrs_retry.lua) | `__Retry__` 用原输入重试 |
+| [`examples/cont_env_attrs_require_trace.lua`](../examples/cont_env_attrs_require_trace.lua) | `__Require__` + `__Trace__` |
+
+### Timeout / Retry / Require / Trace 速览
+
+```lua
+__Timeout__(0.05)                    -- 步后检查；超时默认 {tag="timeout",...}
+__Timeout__(0.05, function(a, e)     -- 或自定义 Cont
+  return Cont.unit({ slow = true, a = a, e = e })
+end)
+
+__Retry__(3, function(a) return a < 0 end)  -- pred 真则用原 x 再试
+
+__Require__(function(x) return x ~= nil end)
+__Require__(ok_pred, function(x) return Cont.unit({tag="bad", x=x}) end)
+
+__Trace__("step-name")               -- print [step-name] before/after
+```
+
+注意：`__Timeout__` **不是**抢占式；长同步循环跑完才会看到超时。
 
 ### 规则与错误
 
