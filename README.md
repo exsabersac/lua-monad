@@ -155,7 +155,7 @@ bind(ma, f)  = function(k) return ma(function(a) return f(a)(k) end) end
 
 在 Cont 专用 env 里定义步骤函数，**默认**按定义序自动 `>>`（无 `ContPipe`）。详见 [`docs/Cont环境组合.md`](docs/Cont环境组合.md)。
 
-示例：`examples/cont_env_pipe.lua`（基础）；更复杂：`cont_env_callcc.lua`（callCC 中止）、`cont_env_coro_mix.lua`（与 CPS Coro 混用）、`cont_env_data_driven.lua`（配置字段）、`cont_env_fact_pipeline.lua`（长链 / 阶乘 / mapCont）；互调 / 局部函数 / 管道当一步：`cont_env_mutual_pipes.lua`、`cont_env_local_helpers.lua`、`cont_env_pipe_as_step.lua`；属性：`cont_env_attrs_helper.lua`、`cont_env_attrs_until.lua`、`cont_env_attrs_before_after.lua`（Cont 包装）、`cont_env_attrs_after_step.lua`（管道顺序）、`cont_env_attrs_timeout.lua`、`cont_env_attrs_retry.lua`、`cont_env_attrs_require_trace.lua`。
+示例：`examples/cont_env_pipe.lua`（基础）；更复杂：`cont_env_callcc.lua`（callCC 中止）、`cont_env_coro_mix.lua`（与 CPS Coro 混用）、`cont_env_data_driven.lua`（配置字段）、`cont_env_fact_pipeline.lua`（长链 / 阶乘 / mapCont）；互调 / 局部函数 / 管道当一步：`cont_env_mutual_pipes.lua`、`cont_env_local_helpers.lua`、`cont_env_pipe_as_step.lua`；属性：`cont_env_attrs_helper.lua`、`cont_env_attrs_until.lua`、`cont_env_attrs_before_after.lua`（Cont 包装）、`cont_env_attrs_after_step.lua`（管道顺序）、`cont_env_attrs_timeout.lua`、`cont_env_attrs_retry.lua`、`cont_env_attrs_require_trace.lua`。 异步效果同步写法：`fx_wait_click_flow.lua`、`fx_custom_handlers.lua`、`fx_with_attrs.lua`（见 [`docs/异步效果同步写法.md`](docs/异步效果同步写法.md)）。
 
 ```lua
 local pipe = Cont.withEnv(function(_ENV)
@@ -186,6 +186,11 @@ API：
 适合教学：看清「yield = 捕获当前续延」的本质。也可与 Cont 的 `>>` 混用。设计上的三层划分见 [`docs/设计说明.md`](docs/设计说明.md)。
 
 生成器 / 交互示例：`examples/coro_generator.lua`、`examples/coro_interactive.lua`。
+
+### 异步效果同步写法（`fx`）
+
+[`src/fx.lua`](src/fx.lua) 在 Cont/Coro 上提供教学用 `wait` / `connect` / `click`：业务用 `Cont.withEnv` 同步书写，效果经 `Coro.yield` 交给 `fx.run` 的 handlers（默认 mock，可覆盖）。**不是**真实网络/UI，也**不是**原生 `coroutine`/`perform`。文档：[`docs/异步效果同步写法.md`](docs/异步效果同步写法.md)。
+
 
 ## do-notation（`@mdo` 预处理）
 
@@ -270,6 +275,11 @@ lua examples/cont_env_local_helpers.lua
 lua examples/cont_env_pipe_as_step.lua
 lua examples/coro_generator.lua
 lua examples/coro_interactive.lua
+
+# 异步效果同步写法（fx + Cont.withEnv）
+lua examples/fx_wait_click_flow.lua
+lua examples/fx_custom_handlers.lua
+lua examples/fx_with_attrs.lua
 ```
 
 `package.path` 已在脚本里加上 `src/?.lua`，请在**仓库根目录**执行。
@@ -290,6 +300,7 @@ lua-monad/
   src/cont.lua
   src/cont_env.lua           # Cont.withEnv 默认步骤收集 + 属性
   src/coro.lua               # Cont-based CPS coro
+  src/fx.lua                 # 教学：同步写法 / 异步效果（wait/connect/click）
   src/mdo.lua                # @mdo 预处理 + loadfile/dofile/loader
   tests/run.lua              # 定律 + 糖 + coro + mdo 断言
   tools/mdo.lua              # CLI：写 .lua 或 --run
@@ -318,10 +329,14 @@ lua-monad/
   examples/cont_env_attrs_require_trace.lua # __Require__ + __Trace__
   examples/coro_generator.lua  # yield 1..n + collect/run
   examples/coro_interactive.lua# yield 请求 / resume 回答
+  examples/fx_wait_click_flow.lua   # withEnv + fx.wait/click/connect
+  examples/fx_custom_handlers.lua   # 自定义瞬时 handlers + 事件日志
+  examples/fx_with_attrs.lua        # Require/Trace + fx.wait
   docs/设计说明.md
   docs/API.md
   docs/do语法.md
   docs/Cont环境组合.md
+  docs/异步效果同步写法.md
   README.md
 ```
 
@@ -331,6 +346,7 @@ lua-monad/
 - [设计说明](docs/设计说明.md) — 总架构与 makeMonad
 - [do 语法](docs/do语法.md) — `@mdo` 预处理器
 - [Cont 环境组合](docs/Cont环境组合.md) — `withEnv` 默认 `>>`
+- [异步效果同步写法](docs/异步效果同步写法.md) — `fx` + Coro.yield 解释器
 - [API 参考](docs/API.md)
 
 ## 许可

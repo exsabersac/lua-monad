@@ -228,6 +228,21 @@ end
 
 ---
 
+## `fx` — `src/fx.lua`
+
+教学用效果层（同步写法 / 异步效果）。依赖 Cont + Coro；**非**真实网络/UI，**非**原生 coroutine。
+
+| 函数 | 说明 |
+|------|------|
+| `fx.wait(seconds)` | yield `{ kind="wait", seconds }`；resume 后 `Cont.unit(true)` |
+| `fx.connect(host, opts?)` | yield `{ kind="connect", host, opts? }`；resume 值为连接结果表 |
+| `fx.click(target)` | yield `{ kind="click", target }`；resume 值为点击结果表 |
+| `fx.run(ma, handlers?)` | `Coro.run` + 按 `kind` 分派；默认 mock 可被 `handlers` 覆盖 |
+
+详见 [异步效果同步写法.md](./异步效果同步写法.md)。
+
+---
+
 ## `mdo` — `src/mdo.lua`（do-notation 预处理 / 加载）
 
 将 `@mdo MONAD … @end` 展开为 `>>` / `..` 嵌套，并可直接加载执行 `.mdo`。详见 [`do语法.md`](do语法.md)。

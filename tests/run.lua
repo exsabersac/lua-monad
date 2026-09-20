@@ -1007,6 +1007,71 @@ do
 end
 
 ------------------------------------------------------------
+-- fx：wait / connect / click + 瞬时 handlers
+------------------------------------------------------------
+do
+  local fx = require("fx")
+
+  local events = {}
+  local instant = {
+    wait = function(req)
+      events[#events + 1] = { kind = "wait", seconds = req.seconds }
+      return true
+    end,
+    connect = function(req)
+      events[#events + 1] = { kind = "connect", host = req.host }
+      return { ok = true, host = req.host, latency = 0 }
+    end,
+    click = function(req)
+      events[#events + 1] = { kind = "click", target = req.target }
+      return { ok = true, target = req.target }
+    end,
+  }
+
+  -- 单独 wait
+  events = {}
+  local w = fx.run(fx.wait(0.05), instant)
+  assert_eq(w, true, "fx.wait resumes to true")
+  assert_eq(#events, 1, "fx.wait one event")
+  assert_eq(events[1].kind, "wait", "fx.wait event kind")
+  assert_eq(events[1].seconds, 0.05, "fx.wait event seconds")
+
+  -- connect
+  events = {}
+  local c = fx.run(fx.connect("h.example"), instant)
+  assert_true(c.ok and c.host == "h.example", "fx.connect mock ok")
+  assert_eq(events[1].kind, "connect", "fx.connect event kind")
+
+  -- click
+  events = {}
+  local k = fx.run(fx.click("btn"), instant)
+  assert_true(k.ok and k.target == "btn", "fx.click mock ok")
+  assert_eq(events[1].kind, "click", "fx.click event kind")
+
+  -- 串联 + withEnv
+  events = {}
+  local pipe = Cont.withEnv(function(_ENV)
+    function a(_)
+      return fx.wait(0.01) >> function(_)
+        return fx.click("go")
+      end
+    end
+    function b(click_res)
+      return fx.connect("api") >> function(conn)
+        return Cont.unit({ click = click_res, conn = conn })
+      end
+    end
+  end)
+  local final = fx.run(pipe(nil), instant)
+  assert_true(final.click.ok and final.click.target == "go", "fx pipe click")
+  assert_true(final.conn.ok and final.conn.host == "api", "fx pipe connect")
+  assert_eq(#events, 3, "fx pipe three events")
+  assert_eq(events[1].kind, "wait", "fx pipe event1 wait")
+  assert_eq(events[2].kind, "click", "fx pipe event2 click")
+  assert_eq(events[3].kind, "connect", "fx pipe event3 connect")
+end
+
+------------------------------------------------------------
 io.stdout:write("\n")
 if failures > 0 then
   io.stderr:write(failures .. " failure(s)\n")

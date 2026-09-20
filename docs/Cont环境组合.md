@@ -263,3 +263,9 @@ __Trace__("step-name")               -- print [step-name] before/after
 - `__AfterStep__` / `__BeforeStep__`：目标名须为**管道步骤**（非 Helper）；环或缺目标 → 报错；同名重定义更新约束。
 - 独立（非 env）：`cont_env.attrs.__Before__(pre)(step)` 等包装；`attrs.__AfterStep__(name)` / `__BeforeStep__(name)` 返回描述符（顺序约束仅在 `withEnv` 内生效），见 `src/cont_env.lua`。
 
+
+## 异步效果的同步写法（`fx`）
+
+若要在 `withEnv` 管道里写「看起来同步」的 wait / 连接 / 点击，请用教学层 [`src/fx.lua`](../src/fx.lua)：效果经 `Coro.yield` 交出，由 `fx.run` 的 handlers 兑现。详见 **[异步效果同步写法.md](./异步效果同步写法.md)**。
+
+示例：`examples/fx_wait_click_flow.lua`、`fx_custom_handlers.lua`、`fx_with_attrs.lua`。
