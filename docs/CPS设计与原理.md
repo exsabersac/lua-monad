@@ -236,7 +236,7 @@ reset(
 ┌─────────────────────────────────────────┐
 │  Coro API：yield / start / resume / …   │  给用户用的挂起与驱动
 ├─────────────────────────────────────────┤
-│  Answer：Done | Yielded                  │  作为 Cont 的「最终答案」类型 r
+│  Answer：Done | Yielded | Stopped | Failed │  作为 Cont 的「最终答案」类型 r
 ├─────────────────────────────────────────┤
 │  Cont：unit / bind / runCont             │  纯续延传递，尚无「暂停」语义
 └─────────────────────────────────────────┘
@@ -245,8 +245,10 @@ reset(
 1. **Cont 层**：只会一路算到调用顶层 `k` 为止，本身不「暂停」。
 2. **Answer 层**：把 `r` 从「普通值」换成可观察的状态：
    - `Done { tag="done", value }` — 整段结束；
-   - `Yielded { tag="yielded", value, cont }` — 刚挂起；`cont` 是恢复后续延。
-3. **Coro API**：用 Cont 编出 Yielded，并用驱动函数推进。
+   - `Yielded { tag="yielded", value, cont }` — 刚挂起；`cont` 是恢复后续延；
+   - `Stopped { tag="stopped", reason? }` — 主动停止 / 取消（不调用续延）；
+   - `Failed { tag="failed", error }` — 管道级失败（不调用续延）。
+3. **Coro API**：用 Cont 编出 Yielded / Stopped / Failed，并用驱动函数推进。
 
 ### 7.2 yield：故意不调用当前续延
 
@@ -312,11 +314,26 @@ resume(a1, "pong")
 
 | API | 作用 |
 |-----|------|
-| `step(answer, v)` | 已是 Done 则不动；Yielded 则 `resume` |
-| `run(ma, handler)` | 循环：每次 yield 把载荷交给 `handler`，用其返回值 resume，直到 Done，返回最终值 |
-| `collect(ma)` | 记录所有 yield 载荷；每次以 `true` resume；返回 `yields, final` |
+| `step(answer, v)` | Done/Stopped/Failed 则不动；Yielded 则 `resume` |
+| `run(ma, handler)` | 循环至终态：Done → 最终值；Stopped/Failed → `nil, answer` |
+| `runEx(ma, handler)` | → `"done"\| "stopped"\| "failed"`, payload |
+| `collect(ma)` | 记录所有 yield 载荷；每次以 `true` resume；中止时第三返回值为 answer |
+| `stop(reason?)` / `fail(err)` | 与 `yield` 同形：不调用 `k`，直接返回终态 Answer |
 
-生成器与交互式问答见 `examples/coro_generator.lua`、`examples/coro_interactive.lua`。
+生成器与交互式问答见 `examples/coro_generator.lua`、`examples/coro_interactive.lua`。  
+停止 / 失败 / 取消见 `examples/fx_stop_cancel.lua`、`examples/fx_fail_catch.lua`。
+
+### 7.7 停止、失败与 Cont 层异常
+
+两层不要混用：
+
+| 层 | API | 用途 |
+|----|-----|------|
+| Coro / fx | `Coro.stop` / `Coro.fail`、`fx.stop` / `fx.fail`、`opts.cancel` | 管道驱动中止；`fx.run` 返回结构化结果表 |
+| Cont | `Cont.throw` / `Cont.catch` / `Cont.protect` | `evalCont` 路径上的显式异常（handler 栈，不用 Lua error 传业务失败） |
+
+`stop`/`fail` 与 `yield` 一样**故意不调用当前续延**，因此 `start`/`run` 直接看到 `Stopped`/`Failed`，不会再包成 `Done`。  
+`Cont.throw` 则调用 catch 栈顶的逃逸续延（实现上可配合 `pcall` 兜住真正的 Lua error）。示例：`examples/cont_catch_throw.lua`。
 
 ---
 
@@ -338,7 +355,7 @@ resume(a1, "pong")
 
 **取舍**
 
-- 用 `Done|Yielded` 作 Cont 的答案类型，而不是另起一套解释器——这样 `bind` 仍然是原来的 Cont bind，协程只是换了 `r`。
+- 用 `Done|Yielded|Stopped|Failed` 作 Cont 的答案类型，而不是另起一套解释器——这样 `bind` 仍然是原来的 Cont bind，协程只是换了 `r`。
 - `yield` 返回的 Cont 与普通 Cont 相同，故可与 `>>`、`@mdo` 混用。
 - `shift`/`reset` 提供定界教学模型；与 `callCC` 并存，职责分开。
 
@@ -356,7 +373,8 @@ resume(a1, "pong")
 2. 读 §4，跑 `examples/cont_callcc.lua`。
 3. 读 §5–§6，对照 `cont_cps_basics.lua` 末尾的 mapCont / withCont / shift。
 4. 读 §7，跑 `examples/coro_generator.lua` 与 `coro_interactive.lua`。
-5. API 速查：`docs/API.md` 中 Cont / Coro 两节；总架构：`docs/设计说明.md`。
+5. 读停止/异常：`examples/cont_catch_throw.lua`、`fx_stop_cancel.lua`；异步效果：[异步效果同步写法.md](./异步效果同步写法.md)。
+6. API 速查：`docs/API.md` 中 Cont / Coro / fx 三节；总架构：`docs/设计说明.md`。
 
 若只记三句话：
 

@@ -165,10 +165,13 @@
 | `mapCont(f, ma)` | `(r→r) → Cont r a → Cont r a`；`λk. f(c(k))`，改造**答案** |
 | `withCont(f, ma)` | `((b→r)→(a→r)) → Cont r a → Cont r b`；`λk. c(f(k))`，改造**续延** |
 | `callCC(f)` | `f(escape)`；`escape(a)` 跳出到进入 callCC 时的外层续延（abort 风格） |
+| `throw(e)` | 逃逸到最近 `catch`；无 catch 则 `error("uncaught Cont.throw: …")` |
+| `catch(ma, handler)` | `handler(err) → Cont`；handler 栈 + pcall 兜住 Lua error |
+| `protect(ma)` | pcall 包住执行；无 catch 时 Lua error → `k({tag="error", error=…})` |
 | `reset(ma)` | 定界提示：等同 `evalCont(ma)`（`Cont a a → a`） |
 | `shift(f)` | 定界捕获：`f` 收到 `k`，`evalCont(k(x))` 为定界续延作用于 `x` |
 
-`mapCont` vs `withCont`：前者 `f` 包在跑完之后的结果上；后者 `f` 先变换续延再交给计算。示例见 `examples/cont_cps_basics.lua`、`examples/cont_callcc.lua`。
+`mapCont` vs `withCont`：前者 `f` 包在跑完之后的结果上；后者 `f` 先变换续延再交给计算。示例见 `examples/cont_cps_basics.lua`、`examples/cont_callcc.lua`、`examples/cont_catch_throw.lua`。
 
 | `withEnv(body)` | 见下节 `cont_env`；亦可 `require("cont_env")` 后使用 |
 
@@ -191,6 +194,7 @@
 | `attrs.__Retry__(n, pred)` | `pred(a)` 则用原 `x` 重试，最多 `n` 次 |
 | `attrs.__Require__(pred[, on_fail])` | 步前校验；失败默认 `{tag="rejected", value}` |
 | `attrs.__Trace__([label])` | 前后 `print`，值不变 |
+| `attrs.__Catch__(handler)` | `Cont.catch(step(x), handler)`；步内 `Cont.throw` / Lua error |
 
 示例：`examples/cont_env_pipe.lua`；属性见 `examples/cont_env_attrs_*.lua` 与 [`Cont环境组合.md`](Cont环境组合.md)。
 
@@ -199,18 +203,21 @@
 
 ## `Coro` — `src/coro.lua`
 
-建立在 `Cont` 上；答案类型为 `Done | Yielded`。
+建立在 `Cont` 上；答案类型为 `Done | Yielded | Stopped | Failed`。
 
 | 函数 | 说明 |
 |------|------|
-| `Done(v)` / `Yielded(v, cont)` | 构造答案 |
-| `isDone(a)` / `isYielded(a)` | 谓词 |
+| `Done(v)` / `Yielded(v, cont)` / `Stopped(reason?)` / `Failed(err)` | 构造答案 |
+| `isDone` / `isYielded` / `isStopped` / `isFailed` / `isTerminal` | 谓词 |
 | `yield(v)` | → `Cont Answer b`；挂起并交出 `v` |
-| `start(ma)` | 跑 Cont，顶层续延包成 `Done` |
+| `stop(reason?)` | → `Cont Answer b`；不调用 `k`，返回 `Stopped` |
+| `fail(err)` | → `Cont Answer b`；不调用 `k`，返回 `Failed` |
+| `start(ma)` | 跑 Cont，顶层续延包成 `Done`（或已是 Stopped/Failed） |
 | `resume(y, b)` | 将 `b` 喂给 `y.cont` |
-| `step(answer, value)` | Done 原样返回；Yielded 则 `resume` |
-| `run(ma, handler)` | 循环：Yielded 时 `handler(yielded)` 得 resume 输入；返回最终 Done 值 |
-| `collect(ma)` | 记录每次 yield 载荷，resume 用 `true`；→ `yields, final` |
+| `step(answer, value)` | Done/Stopped/Failed 原样返回；Yielded 则 `resume` |
+| `run(ma, handler)` | Done → 最终值；Stopped/Failed → `nil, answer`（**第二返回值**） |
+| `runEx(ma, handler)` | → `status, payload`；`status` ∈ `"done"` \| `"stopped"` \| `"failed"` |
+| `collect(ma)` | → `yields, final`；若中止则 `yields, nil, answer` |
 | `Coro.Cont` | 对 `cont` 模块的引用 |
 
 典型循环（手动）：
@@ -237,7 +244,13 @@ end
 | `fx.wait(seconds)` | yield `{ kind="wait", seconds }`；resume 后 `Cont.unit(true)` |
 | `fx.connect(host, opts?)` | yield `{ kind="connect", host, opts? }`；resume 值为连接结果表 |
 | `fx.click(target)` | yield `{ kind="click", target }`；resume 值为点击结果表 |
-| `fx.run(ma, handlers?)` | `Coro.run` + 按 `kind` 分派；默认 mock 可被 `handlers` 覆盖 |
+| `fx.stop(reason?)` | → `Coro.stop`；管道中止为 `Stopped` |
+| `fx.fail(err)` / `fx.throw` | → `Coro.fail`；管道失败为 `Failed` |
+| `fx.run(ma, handlers?, opts?)` | 按 `kind` 分派；`opts.cancel` 为函数或 `{cancelled=…}`；**始终**返回结果表 |
+| `fx.try(ma, handlers?, opts)` | 同 `run`；`opts.on_fail` / `opts.on_stop` 可恢复 |
+
+`fx.run` 结果表：`{ok=true,value}` \| `{ok=false,stopped=true,reason}` \| `{ok=false,failed=true,error}`。  
+旧代码若假定 `fx.run` 直接返回业务值，请改为 `result.value`（破坏性变更）。
 
 详见 [异步效果同步写法.md](./异步效果同步写法.md)。
 

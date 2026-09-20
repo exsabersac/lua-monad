@@ -37,6 +37,7 @@ local ATTR_KEYS = {
   __Trace__ = true,
   __AfterStep__ = true,
   __BeforeStep__ = true,
+  __Catch__ = true,
 }
 
 ------------------------------------------------------------
@@ -193,6 +194,17 @@ local function make_before_step(name)
   return { __attr_before_step = name }
 end
 
+-- 用 Cont.catch 包住步骤产出的 Cont：步内 Cont.throw / Lua error 交给 handler
+local function wrap_catch(handler)
+  assert(type(handler) == "function", "__Catch__: handler must be a function")
+  return function(step)
+    assert(type(step) == "function", "__Catch__: step must be a function")
+    return function(x)
+      return Cont.catch(step(x), handler)
+    end
+  end
+end
+
 -- Helper sentinel：独立使用时标记「非步骤」；withEnv 内用队列 flag
 local HELPER_SENTINEL = { __attr_helper = true }
 
@@ -224,6 +236,8 @@ cont_env.attrs = {
   __AfterStep__ = make_after_step,
   --- __BeforeStep__(name) → 描述符；withEnv 内把下一步排到 name 之前
   __BeforeStep__ = make_before_step,
+  --- __Catch__(handler)(step) → Cont.catch(step(x), handler)
+  __Catch__ = wrap_catch,
 }
 
 cont_env.DEFAULT_UNTIL_MAX = DEFAULT_UNTIL_MAX
@@ -314,6 +328,10 @@ local function make_env_attr_ctors(pending)
     __BeforeStep__ = function(name)
       assert(type(name) == "string", "__BeforeStep__: name must be a string")
       pending[#pending + 1] = { kind = "before_step", name = name }
+    end,
+    __Catch__ = function(handler)
+      local apply = wrap_catch(handler)
+      pending[#pending + 1] = { kind = "wrap", apply = apply }
     end,
   }
 end
@@ -430,7 +448,7 @@ end
 --- withEnv(body) → composed
 -- body(env)：在 env 上用 `function name(...) ... end` 或 `env.name = fn` 定义步骤。
 -- 可用 `__Helper__()` / `__Wrap__` / `__Before__` / `__After__` / `__Until__` / `__Timeout__` /
--- `__Retry__` / `__Require__` / `__Trace__` / `__AfterStep__` / `__BeforeStep__` 标注下一函数。
+-- `__Retry__` / `__Require__` / `__Trace__` / `__Catch__` / `__AfterStep__` / `__BeforeStep__` 标注下一函数。
 -- 返回 composed：a → Cont r z，等价于 foldl (>>) Cont.unit（默认定义序；AfterStep/BeforeStep 拓扑重排）。
 function cont_env.withEnv(body)
   assert(type(body) == "function", "withEnv: body must be a function")

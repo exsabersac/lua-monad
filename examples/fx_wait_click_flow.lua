@@ -58,7 +58,9 @@ local flow = Cont.withEnv(function(_ENV)
 end)
 
 print("=== fx_wait_click_flow：默认 mock handlers（含短 busy-wait）===")
-local final = fx.run(flow(nil))
+local result = fx.run(flow(nil))
+assert(result.ok, "expected ok result")
+local final = result.value
 print("最终:", final.status, "clicks=", tostring(final.click and final.click.target),
   "host=", tostring(final.conn and final.conn.host), "waits=", tostring(final.t))
 assert(final.status == "ok")

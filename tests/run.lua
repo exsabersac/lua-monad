@@ -1006,6 +1006,91 @@ do
   assert_true(type(d2) == "table" and d2.__attr_before_step == "y", "attrs.__BeforeStep__ descriptor")
 end
 
+
+------------------------------------------------------------
+-- Cont.throw / Cont.catch / Cont.protect
+------------------------------------------------------------
+do
+  local v = Cont.evalCont(Cont.catch(
+    Cont.unit(1) >> function(_)
+      return Cont.throw("boom")
+    end,
+    function(err)
+      return Cont.unit("caught:" .. tostring(err))
+    end
+  ))
+  assert_eq(v, "caught:boom", "Cont.catch catches throw")
+
+  local nested = Cont.evalCont(Cont.catch(
+    Cont.catch(
+      Cont.throw("in"),
+      function(_) return Cont.throw("out") end
+    ),
+    function(e) return Cont.unit("outer:" .. tostring(e)) end
+  ))
+  assert_eq(nested, "outer:out", "Cont.catch nested rethrow")
+
+  local ok, err = pcall(function()
+    Cont.evalCont(Cont.throw("uncaught"))
+  end)
+  assert_true(not ok and tostring(err):find("uncaught Cont.throw", 1, true),
+    "Cont.throw uncaught errors")
+
+  local prot = Cont.evalCont(Cont.protect(Cont.wrap(function(_k)
+    error("lua-boom", 0)
+  end)))
+  assert_true(type(prot) == "table" and prot.tag == "error", "Cont.protect → error table")
+  assert_true(tostring(prot.error):find("lua-boom", 1, true), "Cont.protect error payload")
+end
+
+------------------------------------------------------------
+-- Coro：stop / fail / runEx / step passthrough
+------------------------------------------------------------
+do
+  local a = Coro.start(Coro.stop("r"))
+  assert_true(Coro.isStopped(a) and a.reason == "r", "coro stop Answer")
+
+  local b = Coro.start(Coro.fail("e"))
+  assert_true(Coro.isFailed(b) and b.error == "e", "coro fail Answer")
+
+  -- step 对 Stopped/Failed 原样返回
+  assert_true(Coro.isStopped(Coro.step(a, 1)) and Coro.step(a, 1).reason == "r",
+    "coro step Stopped passthrough")
+  assert_true(Coro.isFailed(Coro.step(b, 1)), "coro step Failed passthrough")
+
+  -- run：成功返回值；Stopped/Failed 返回 nil, answer
+  local body = Coro.yield(1) >> function(_)
+    return Coro.stop("mid")
+  end
+  local v, ans = Coro.run(body, function(_) return true end)
+  assert_true(v == nil and Coro.isStopped(ans) and ans.reason == "mid",
+    "coro run Stopped → nil, answer")
+
+  local v2, ans2 = Coro.run(Coro.fail("f"), function() end)
+  assert_true(v2 == nil and Coro.isFailed(ans2), "coro run Failed → nil, answer")
+
+  local st, payload = Coro.runEx(Cont.unit(9), function() end)
+  assert_eq(st, "done", "coro runEx done status")
+  assert_eq(payload, 9, "coro runEx done payload")
+
+  st, payload = Coro.runEx(Coro.stop("s"), function() end)
+  assert_eq(st, "stopped", "coro runEx stopped")
+  assert_eq(payload, "s", "coro runEx stopped reason")
+
+  st, payload = Coro.runEx(Coro.fail(42), function() end)
+  assert_eq(st, "failed", "coro runEx failed")
+  assert_eq(payload, 42, "coro runEx failed error")
+
+  -- mid-flow stop after yield
+  local mid = Cont.bind(Coro.yield("y"), function(_)
+    return Coro.fail("after-yield")
+  end)
+  local y1 = Coro.start(mid)
+  assert_true(Coro.isYielded(y1), "coro fail after yield: first Yielded")
+  local y2 = Coro.resume(y1, true)
+  assert_true(Coro.isFailed(y2) and y2.error == "after-yield", "coro fail after yield")
+end
+
 ------------------------------------------------------------
 -- fx：wait / connect / click + 瞬时 handlers
 ------------------------------------------------------------
@@ -1030,21 +1115,26 @@ do
 
   -- 单独 wait
   events = {}
-  local w = fx.run(fx.wait(0.05), instant)
-  assert_eq(w, true, "fx.wait resumes to true")
+  local wr = fx.run(fx.wait(0.05), instant)
+  assert_true(wr.ok, "fx.wait ok")
+  assert_eq(wr.value, true, "fx.wait resumes to true")
   assert_eq(#events, 1, "fx.wait one event")
   assert_eq(events[1].kind, "wait", "fx.wait event kind")
   assert_eq(events[1].seconds, 0.05, "fx.wait event seconds")
 
   -- connect
   events = {}
-  local c = fx.run(fx.connect("h.example"), instant)
+  local cr = fx.run(fx.connect("h.example"), instant)
+  assert_true(cr.ok, "fx.connect result ok")
+  local c = cr.value
   assert_true(c.ok and c.host == "h.example", "fx.connect mock ok")
   assert_eq(events[1].kind, "connect", "fx.connect event kind")
 
   -- click
   events = {}
-  local k = fx.run(fx.click("btn"), instant)
+  local kr = fx.run(fx.click("btn"), instant)
+  assert_true(kr.ok, "fx.click result ok")
+  local k = kr.value
   assert_true(k.ok and k.target == "btn", "fx.click mock ok")
   assert_eq(events[1].kind, "click", "fx.click event kind")
 
@@ -1062,13 +1152,45 @@ do
       end
     end
   end)
-  local final = fx.run(pipe(nil), instant)
+  local pr = fx.run(pipe(nil), instant)
+  assert_true(pr.ok, "fx pipe ok")
+  local final = pr.value
   assert_true(final.click.ok and final.click.target == "go", "fx pipe click")
   assert_true(final.conn.ok and final.conn.host == "api", "fx pipe connect")
   assert_eq(#events, 3, "fx pipe three events")
   assert_eq(events[1].kind, "wait", "fx pipe event1 wait")
   assert_eq(events[2].kind, "click", "fx pipe event2 click")
   assert_eq(events[3].kind, "connect", "fx pipe event3 connect")
+
+  -- stop / fail / cancel
+  local stop_r = fx.run(fx.wait(0.01) >> function(_) return fx.stop("bye") end, instant)
+  assert_true(stop_r.stopped and stop_r.reason == "bye", "fx.stop → stopped")
+
+  local fail_r = fx.run(fx.fail("e1"), instant)
+  assert_true(fail_r.failed and fail_r.error == "e1", "fx.fail → failed")
+
+  local token = { cancelled = false }
+  local waits = 0
+  local cancel_h = {
+    wait = function(req)
+      waits = waits + 1
+      token.cancelled = true
+      return true
+    end,
+  }
+  local body = fx.wait(0.01) >> function(_)
+    return fx.wait(0.01) >> function(_)
+      return Cont.unit("done")
+    end
+  end
+  local can_r = fx.run(body, cancel_h, { cancel = token })
+  assert_true(can_r.stopped and can_r.reason == "cancelled", "fx cancel token")
+  assert_eq(waits, 1, "fx cancel after first wait")
+
+  local try_r = fx.try(fx.fail("x"), instant, {
+    on_fail = function(err) return "recovered:" .. tostring(err) end,
+  })
+  assert_true(try_r.ok and try_r.value == "recovered:x", "fx.try on_fail")
 end
 
 ------------------------------------------------------------

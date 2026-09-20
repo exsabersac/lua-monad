@@ -165,6 +165,7 @@ end)
 | `__Retry__(n, pred)` | `pred(a)` 表示需要重试；始终用**原始** `x` 再跑 `step`，最多 `n` 次；若最后一次仍 `pred` 则返回该 `a` |
 | `__Require__(pred[, on_fail])` | 步前：若 `not pred(x)`，返回 `on_fail(x)` 或默认 `Cont.unit({tag="rejected", value=x})`；否则 `step(x)` |
 | `__Trace__([label])` | 步前/步后 `print`，不改变值；`label` 可选（默认 `"trace"`） |
+| `__Catch__(handler)` | `Cont.catch(step(x), handler)`；步内 `Cont.throw` / Lua error |
 
 多个属性可叠在同一函数前：按**排队顺序**依次把包装器折到目标上。例如：
 
@@ -251,6 +252,7 @@ __Require__(function(x) return x ~= nil end)
 __Require__(ok_pred, function(x) return Cont.unit({tag="bad", x=x}) end)
 
 __Trace__("step-name")               -- print [step-name] before/after
+__Catch__(function(err) return Cont.unit({recovered=err}) end)
 ```
 
 注意：`__Timeout__` **不是**抢占式；长同步循环跑完才会看到超时。

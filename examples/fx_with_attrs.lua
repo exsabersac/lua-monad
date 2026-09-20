@@ -65,21 +65,29 @@ local instant_wait = {
 }
 
 print("=== 单步：Require 通过 → Trace + fx.wait ===")
-local ok1 = fx.run(gated({ flag = true, n = 1 }), instant_wait)
+local r1 = fx.run(gated({ flag = true, n = 1 }), instant_wait)
+assert(r1.ok)
+local ok1 = r1.value
 assert(ok1.waited == true and ok1.n == 1)
 print("结果: waited=", tostring(ok1.waited))
 
 print("\n=== 单步：Require 拒绝 → 不进 Trace/wait ===")
-local rej = fx.run(gated({ flag = false }), instant_wait)
+local rrej = fx.run(gated({ flag = false }), instant_wait)
+assert(rrej.ok)
+local rej = rrej.value
 assert(rej.tag == "rejected" and rej.value.flag == false)
 print("拒绝:", rej.tag)
 
 print("\n=== 多步 flow：flag=true 完整走完 ===")
-local ok2 = fx.run(flow({ flag = true }), instant_wait)
+local r2 = fx.run(flow({ flag = true }), instant_wait)
+assert(r2.ok)
+local ok2 = r2.value
 assert(ok2.waited == true and ok2.done == true)
 
 print("\n=== 多步 flow：flag=false 在 pause 被拒 ===")
-local rej2 = fx.run(flow({ flag = false }), instant_wait)
+local rrej2 = fx.run(flow({ flag = false }), instant_wait)
+assert(rrej2.ok)
+local rej2 = rrej2.value
 assert(rej2.tag == "rejected")
 
 print("\nfx_with_attrs OK")

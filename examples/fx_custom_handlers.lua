@@ -60,7 +60,9 @@ local instant = {
 }
 
 print("=== fx_custom_handlers：瞬时 handlers + 事件日志 ===")
-local final = fx.run(flow(nil), instant)
+local result = fx.run(flow(nil), instant)
+assert(result.ok, "expected ok result")
+local final = result.value
 
 assert(final.status == "ok")
 assert(final.click.source == "custom")

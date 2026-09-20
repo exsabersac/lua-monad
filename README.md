@@ -3,7 +3,7 @@
 本仓库用纯 Lua 模拟 Haskell 风格的 Monad，**主线是 Cont（续延）与 CPS**：
 
 - 用 `Cont` 显式传递「算完之后做什么」；
-- 用 `Coro` 把挂起编成 `Done | Yielded`（**不是** Lua 原生 `coroutine` 当业务语义）；
+- 用 `Coro` 把挂起/中止编成 `Done | Yielded | Stopped | Failed`（**不是** Lua 原生 `coroutine` 当业务语义）；
 - 用 `Cont.withEnv` 把一串 CPS 步进函数自动 `>>` 成管道，并可挂 PLoop 风格属性；
 - 用 `fx` 做「同步写法、异步效果」：等待 / 联网 / 点击经 `Coro.yield` 交给驱动器。
 
@@ -146,10 +146,14 @@ local flow = Cont.withEnv(function(_ENV)
 end)
 
 local result = fx.run(flow(true))
+assert(result.ok)
+local value = result.value  -- fx.run 返回结构化结果表
 ```
 
+亦支持 `fx.stop` / `fx.fail`、`opts.cancel` 取消令牌，以及 Cont 层 `Cont.throw`/`Cont.catch`。
+
 文档：[异步效果同步写法](docs/异步效果同步写法.md)。  
-示例：`fx_wait_click_flow.lua` · `fx_custom_handlers.lua` · `fx_with_attrs.lua`。
+示例：`fx_wait_click_flow.lua` · `fx_custom_handlers.lua` · `fx_with_attrs.lua` · `fx_stop_cancel.lua` · `fx_fail_catch.lua` · `cont_catch_throw.lua`。
 
 ---
 
@@ -173,9 +177,12 @@ lua examples/cont_env_pipe.lua
 lua examples/cont_env_attrs_after_step.lua
 lua examples/cont_env_coro_mix.lua
 
-# 异步效果
+# 异步效果 / 停止与异常
 lua examples/fx_wait_click_flow.lua
 lua examples/fx_custom_handlers.lua
+lua examples/fx_stop_cancel.lua
+lua examples/fx_fail_catch.lua
+lua examples/cont_catch_throw.lua
 ```
 
 ---
@@ -208,8 +215,8 @@ lua tools/mdo.lua --run examples/do_maybe_foo.mdo
 lua-monad/
   src/cont.lua          # Cont：unit/bind/callCC/mapCont/shift…
   src/cont_env.lua      # withEnv + 属性 + AfterStep
-  src/coro.lua          # CPS 协程 Done|Yielded
-  src/fx.lua            # wait/connect/click + fx.run
+  src/coro.lua          # CPS 协程 Done|Yielded|Stopped|Failed
+  src/fx.lua            # wait/connect/click/stop/fail + fx.run
   src/monad.lua         # makeMonad + 元表糖
   src/{maybe,list,state,status,identity,reader,writer,rws,mdo}.lua
   docs/CPS设计与原理.md

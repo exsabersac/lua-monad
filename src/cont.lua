@@ -10,7 +10,8 @@
 -- callCC 捕获当前续延，用于提前跳出；runCont / evalCont 以用户续延执行。
 -- mapCont / withCont 分别改造「答案」与「续延本身」。
 -- reset / shift 提供教学用的定界续延（答案类型需自洽）。
--- coro.lua 建立在 Cont 之上，用答案类型 Done|Yielded 模拟挂起。
+-- coro.lua 建立在 Cont 之上，用答案类型 Done|Yielded|Stopped|Failed 模拟挂起与中止。
+-- throw / catch / protect 提供 Cont 层显式异常（handler 栈，不用 Lua error 传业务失败）。
 
 local monad = require("monad")
 
@@ -126,6 +127,73 @@ function M.shift(f)
       end)
     end
     return M.evalCont(f(captured))
+  end)
+end
+
+
+------------------------------------------------------------
+-- throw / catch / protect（显式失败，handler 栈；教学用）
+------------------------------------------------------------
+-- catch 向栈顶压入「逃逸续延」；throw 忽略当前 k，直接调用栈顶 handler。
+-- catch 同时用 pcall 兜住 ma 内的 Lua error，一并交给 handler。
+
+local catch_stack = {}
+
+-- throw : e → Cont r a
+-- 逃逸到最近 Cont.catch；无 catch 则 error（未捕获）
+-- 调用 handler 前先弹出栈顶，使 handler 内再 throw 落到外层 catch
+function M.throw(err)
+  return M.wrap(function(_k)
+    local n = #catch_stack
+    local top = catch_stack[n]
+    if not top then
+      error("uncaught Cont.throw: " .. tostring(err), 0)
+    end
+    catch_stack[n] = nil
+    return top(err)
+  end)
+end
+
+-- catch : Cont r a → (e → Cont r a) → Cont r a
+-- handler(err) 返回 Cont，用外层续延 k 继续
+function M.catch(ma, handler)
+  assert(type(handler) == "function", "Cont.catch: handler must be a function")
+  return M.wrap(function(k)
+    local function handle(err)
+      return M.unwrap(handler(err))(k)
+    end
+    catch_stack[#catch_stack + 1] = handle
+    local ok, res = pcall(function()
+      return M.unwrap(ma)(k)
+    end)
+    -- 成功路径或未走 throw 时仍在栈上则弹出；throw 已自行弹出
+    if catch_stack[#catch_stack] == handle then
+      catch_stack[#catch_stack] = nil
+    end
+    if not ok then
+      return handle(res)
+    end
+    return res
+  end)
+end
+
+-- protect : Cont r a → Cont r a
+-- 用 pcall 包住 ma；Lua error 若有 catch 则走 throw 路径，否则以 {tag="error", error=...} 交给 k
+function M.protect(ma)
+  return M.wrap(function(k)
+    local ok, res = pcall(function()
+      return M.unwrap(ma)(k)
+    end)
+    if ok then
+      return res
+    end
+    local n = #catch_stack
+    local top = catch_stack[n]
+    if top then
+      catch_stack[n] = nil -- 与 throw 相同：先弹出再进 handler
+      return top(res)
+    end
+    return k({ tag = "error", error = res })
   end)
 end
 
