@@ -1,7 +1,8 @@
 #!/usr/bin/env lua
 -- do_walk_the_line.mdo — LYAH Walk the line routine，用 @mdo 写法
 -- 目标：Just (3,2)
--- 编辑后：lua tools/mdo.lua examples/do_walk_the_line.mdo
+-- 推荐直接跑：lua tools/mdo.lua --run examples/do_walk_the_line.mdo
+-- 或生成 .lua：lua tools/mdo.lua examples/do_walk_the_line.mdo 再 lua examples/do_walk_the_line.lua
 
 package.path = "src/?.lua;" .. package.path
 

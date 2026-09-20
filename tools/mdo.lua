@@ -2,10 +2,12 @@
 -- tools/mdo.lua — do-notation 预处理器 CLI
 --
 -- 用法：
---   lua tools/mdo.lua INPUT.mdo [-o OUTPUT.lua]
--- 默认输出：与输入同路径，扩展名改为 .lua
+--   lua tools/mdo.lua INPUT.mdo [-o OUTPUT.lua]   — 预处理并写 .lua（默认）
+--   lua tools/mdo.lua --run INPUT.mdo [args...]   — 内存预处理后执行
+--   lua tools/mdo.lua -e INPUT.mdo [args...]      — --run 的别名
 --
--- 在仓库根目录执行。
+-- 在仓库根目录执行。--run 时会设置 package.path 含 src/?.lua，
+-- 并调用 mdo.install_loader()，再 mdo.dofile(input, ...)。
 
 local function script_dir()
   local src = debug.getinfo(1, "S").source
@@ -22,7 +24,10 @@ package.path = root .. "/src/?.lua;" .. package.path
 local mdo = require("mdo")
 
 local function usage()
-  io.stderr:write("用法: lua tools/mdo.lua INPUT.mdo [-o OUTPUT.lua]\n")
+  io.stderr:write([[用法:
+  lua tools/mdo.lua INPUT.mdo [-o OUTPUT.lua]
+  lua tools/mdo.lua --run|-e INPUT.mdo [args...]
+]])
   os.exit(2)
 end
 
@@ -31,22 +36,62 @@ if #args < 1 then
   usage()
 end
 
-local input = args[1]
+local mode = "compile" -- or "run"
+local input = nil
 local output = nil
-local i = 2
+local run_args = {}
+
+local i = 1
 while i <= #args do
-  if args[i] == "-o" then
+  local a = args[i]
+  if a == "--run" or a == "-e" then
+    mode = "run"
+    i = i + 1
+    if not args[i] then
+      usage()
+    end
+    input = args[i]
+    i = i + 1
+    while i <= #args do
+      run_args[#run_args + 1] = args[i]
+      i = i + 1
+    end
+  elseif a == "-o" then
     output = args[i + 1]
     if not output then
       usage()
     end
     i = i + 2
-  else
-    io.stderr:write("未知参数: " .. tostring(args[i]) .. "\n")
+  elseif a:sub(1, 1) == "-" then
+    io.stderr:write("未知参数: " .. tostring(a) .. "\n")
     usage()
+  else
+    if input then
+      io.stderr:write("多余参数: " .. tostring(a) .. "\n")
+      usage()
+    end
+    input = a
+    i = i + 1
   end
 end
 
+if not input then
+  usage()
+end
+
+if mode == "run" then
+  mdo.install_loader()
+  local ok, err = pcall(function()
+    mdo.dofile(input, table.unpack(run_args))
+  end)
+  if not ok then
+    io.stderr:write(tostring(err) .. "\n")
+    os.exit(1)
+  end
+  os.exit(0)
+end
+
+-- compile mode
 if not output then
   if input:match("%.mdo$") then
     output = input:gsub("%.mdo$", ".lua")

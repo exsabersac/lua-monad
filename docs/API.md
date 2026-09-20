@@ -139,13 +139,28 @@ end
 
 ---
 
-## `mdo` — `src/mdo.lua`（do-notation 预处理）
+## `mdo` — `src/mdo.lua`（do-notation 预处理 / 加载）
 
-将 `@mdo MONAD … @end` 展开为 `>>` / `..` 嵌套。详见 [`do语法.md`](do语法.md)。
+将 `@mdo MONAD … @end` 展开为 `>>` / `..` 嵌套，并可直接加载执行 `.mdo`。详见 [`do语法.md`](do语法.md)。
 
 | 函数 | 说明 |
 |------|------|
 | `expand(body_src, monad[, base_line])` | 展开 do 正文 → Lua 表达式字符串；`monad` 为上下文名 |
 | `preprocess(file_src)` | 替换源码中全部 `@mdo` 块，返回完整 Lua 源 |
+| `compile(src[, chunkname])` | 预处理后 `load(..., chunkname, "t")` → function 或 nil, err |
+| `loadfile(path)` | 读文件并 compile；chunkname 为 `@path` 或 `@path [mdo]` |
+| `dofile(path, ...)` | loadfile 后调用，可变参数传给 chunk（同 Lua `dofile`） |
+| `require_searcher(modname)` | package 搜索器：在 `package.path` 的 `?.lua` 旁试 `?.mdo`，并搜 `src/?.mdo`、`examples/?.mdo`、`./?.mdo` |
+| `install_loader()` | 幂等把 searcher 插入 `package.searchers`（5.2+）或 `package.loaders`（5.1） |
 
-CLI：`lua tools/mdo.lua INPUT.mdo [-o OUTPUT.lua]`（默认同路径 `.lua`）。
+环境变量：`MDO_CACHE=1` 时，`dofile` 会写同路径旁路 `.lua`（默认关闭）。
+
+CLI：
+
+```bash
+lua tools/mdo.lua INPUT.mdo [-o OUTPUT.lua]   # 写 .lua
+lua tools/mdo.lua --run|-e INPUT.mdo [args...] # 内存预处理并执行
+lua tools/run_mdo.lua INPUT.mdo [args...]      # --run 薄包装
+```
+
+`--run` 会设置 `package.path` 含仓库 `src/?.lua`、调用 `install_loader()`，再 `dofile`。

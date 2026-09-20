@@ -1,7 +1,7 @@
 #!/usr/bin/env lua
 -- do_maybe_foo.mdo — LYAH「foo」：Just 3 与 Just "!" 拼成 "3!"
--- 编辑本文件后运行：lua tools/mdo.lua examples/do_maybe_foo.mdo
--- 生成 examples/do_maybe_foo.lua 后再：lua examples/do_maybe_foo.lua
+-- 推荐直接跑：lua tools/mdo.lua --run examples/do_maybe_foo.mdo
+-- 或生成 .lua：lua tools/mdo.lua examples/do_maybe_foo.mdo 再 lua examples/do_maybe_foo.lua
 
 package.path = "src/?.lua;" .. package.path
 

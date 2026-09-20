@@ -6,7 +6,13 @@
 -- 主要 API：
 --   mdo.expand(body_src, monad)  — 展开 do 正文为 Lua 表达式字符串
 --   mdo.preprocess(file_src)     — 处理整文件，替换所有 @mdo 块
+--   mdo.compile(src, chunkname?) — 预处理后 load，返回 function 或 nil,err
+--   mdo.loadfile(path)           — 读文件并 compile（chunkname=@path [mdo]）
+--   mdo.dofile(path, ...)        — loadfile + 调用（同 Lua dofile 传参）
+--   mdo.require_searcher(modname)— package 搜索器（.mdo）
+--   mdo.install_loader()         — 幂等插入 package.searchers/loaders
 --
+-- 可选：环境变量 MDO_CACHE=1 时，mdo.dofile 会写同路径旁路 .lua 缓存（默认关闭）。
 -- 语法与限制见 docs/do语法.md。
 
 local M = {}
@@ -282,6 +288,200 @@ function M.preprocess(file_src)
   end
 
   return table.concat(out, "\n")
+end
+
+------------------------------------------------------------
+-- 加载 / 执行 / package 搜索器
+------------------------------------------------------------
+
+-- 去掉 shebang，便于 load
+local function strip_shebang(s)
+  if s:sub(1, 2) == "#!" then
+    local nl = s:find("\n", 1, true)
+    if nl then
+      return s:sub(nl + 1)
+    end
+    return ""
+  end
+  return s
+end
+
+local function read_file(path)
+  local f, err = io.open(path, "r")
+  if not f then
+    return nil, err
+  end
+  local data = f:read("*a")
+  f:close()
+  return data
+end
+
+--- 预处理源码后 `load` 为可调用 chunk。
+--- @param src string           含 @mdo 的源码
+--- @param chunkname string|nil load 的 chunk 名（调试用）
+--- @return function|nil, string|nil  成功返回函数；失败返回 nil, err
+function M.compile(src, chunkname)
+  local ok, result = pcall(M.preprocess, src)
+  if not ok then
+    return nil, tostring(result)
+  end
+  local lua_src = strip_shebang(result)
+  return load(lua_src, chunkname or "=(mdo)", "t")
+end
+
+--- 读取文件并编译（预处理 + load）。
+--- chunkname：默认 `@path`；若扩展名为 `.mdo` 则为 `@path [mdo]`。
+--- @param path string
+--- @return function|nil, string|nil
+function M.loadfile(path)
+  local src, err = read_file(path)
+  if not src then
+    return nil, "cannot read " .. tostring(path) .. ": " .. tostring(err)
+  end
+  local chunkname
+  if path:match("%.mdo$") then
+    chunkname = "@" .. path .. " [mdo]"
+  else
+    chunkname = "@" .. path
+  end
+  return M.compile(src, chunkname)
+end
+
+-- 可选旁路缓存：仅当 MDO_CACHE=1 时写入同路径 .lua（默认关闭，避免意外覆盖）
+local function maybe_write_cache(path, lua_src)
+  if os.getenv("MDO_CACHE") ~= "1" then
+    return
+  end
+  if not path:match("%.mdo$") then
+    return
+  end
+  local out_path = path:gsub("%.mdo$", ".lua")
+  local f = io.open(out_path, "w")
+  if not f then
+    return
+  end
+  f:write(lua_src)
+  if lua_src:sub(-1) ~= "\n" then
+    f:write("\n")
+  end
+  f:close()
+end
+
+--- 加载并执行文件，可变参数传给 chunk（行为类似 Lua `dofile`）。
+--- 若环境变量 `MDO_CACHE=1`，会把预处理结果写到同目录 `.lua`（默认不写）。
+--- @param path string
+--- @param ... any
+--- @return ... chunk 的返回值
+function M.dofile(path, ...)
+  local src, err = read_file(path)
+  if not src then
+    error("mdo.dofile: cannot read " .. tostring(path) .. ": " .. tostring(err), 0)
+  end
+  local chunkname
+  if path:match("%.mdo$") then
+    chunkname = "@" .. path .. " [mdo]"
+  else
+    chunkname = "@" .. path
+  end
+  local ok, result = pcall(M.preprocess, src)
+  if not ok then
+    error(tostring(result), 0)
+  end
+  maybe_write_cache(path, result)
+  local lua_src = strip_shebang(result)
+  local chunk, lerr = load(lua_src, chunkname, "t")
+  if not chunk then
+    error("mdo.dofile: load failed for " .. tostring(path) .. ": " .. tostring(lerr), 0)
+  end
+  return chunk(...)
+end
+
+-- 额外 .mdo 搜索模板（相对当前工作目录）
+local EXTRA_MDO_TEMPLATES = {
+  "src/?.mdo",
+  "examples/?.mdo",
+  "./?.mdo",
+}
+
+local function path_templates_for_mdo()
+  local seen = {}
+  local list = {}
+  local function add(t)
+    if t and t ~= "" and not seen[t] then
+      seen[t] = true
+      list[#list + 1] = t
+    end
+  end
+  for template in string.gmatch(package.path, "([^;]+)") do
+    add(template)
+    if template:find("?.lua", 1, true) then
+      add((template:gsub("%?%.lua", "?.mdo")))
+    end
+  end
+  for _, t in ipairs(EXTRA_MDO_TEMPLATES) do
+    add(t)
+  end
+  return list
+end
+
+local function module_to_filepath(modname, template)
+  local name = modname:gsub("%.", "/")
+  return (template:gsub("%?", name, 1))
+end
+
+--- package 搜索器：在 `package.path` 中把 `?.lua` 换成 `?.mdo` 尝试，
+--- 并额外搜索 `src/?.mdo`、`examples/?.mdo`、`./?.mdo`。
+--- 找到则返回 loader（调用后得到模块返回值）；否则返回说明字符串。
+--- @param modname string
+--- @return function|string
+function M.require_searcher(modname)
+  local tried = {}
+  for _, template in ipairs(path_templates_for_mdo()) do
+    -- 只尝试 .mdo 模板（由 ?.lua 派生或 EXTRA）
+    if template:find("?.mdo", 1, true) or template:match("%.mdo$") then
+      local filepath = module_to_filepath(modname, template)
+      tried[#tried + 1] = filepath
+      local f = io.open(filepath, "r")
+      if f then
+        f:close()
+        return function()
+          local chunk, err = M.loadfile(filepath)
+          if not chunk then
+            error(
+              "error loading module '" .. modname .. "' from " .. filepath
+                .. ":\n\t" .. tostring(err),
+              0
+            )
+          end
+          -- 与 Lua 标准 searcher 一致：把 modname 与路径传给 chunk
+          return chunk(modname, filepath)
+        end
+      end
+    end
+  end
+  return "\n\tno mdo module '" .. modname .. "'"
+end
+
+local _loader_installed = false
+
+--- 将 `require_searcher` 插入 `package.searchers`（Lua 5.2+）或
+--- `package.loaders`（Lua 5.1）。幂等：重复调用不会重复插入。
+function M.install_loader()
+  if _loader_installed then
+    return
+  end
+  local searchers = package.searchers or package.loaders
+  if not searchers then
+    error("mdo.install_loader: 当前 Lua 无 package.searchers / package.loaders", 0)
+  end
+  for _, s in ipairs(searchers) do
+    if s == M.require_searcher then
+      _loader_installed = true
+      return
+    end
+  end
+  searchers[#searchers + 1] = M.require_searcher
+  _loader_installed = true
 end
 
 return M

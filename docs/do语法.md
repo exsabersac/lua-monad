@@ -4,12 +4,31 @@
 
 ## 快速上手
 
+**推荐：直接跑 `.mdo`（自动预处理后执行）**
+
 ```bash
 # 在仓库根目录
+lua tools/mdo.lua --run examples/do_maybe_foo.mdo
+lua tools/mdo.lua -e examples/do_walk_the_line.mdo    # -e 即 --run
+lua tools/run_mdo.lua examples/do_maybe_foo.mdo       # 薄包装
+```
+
+仍可只生成 `.lua`：
+
+```bash
 lua tools/mdo.lua examples/do_maybe_foo.mdo          # → examples/do_maybe_foo.lua
 lua tools/mdo.lua examples/foo.mdo -o /tmp/foo.lua   # 指定输出
-
 lua examples/do_maybe_foo.lua
+```
+
+程序内加载：
+
+```lua
+package.path = "src/?.lua;" .. package.path
+local mdo = require("mdo")
+mdo.install_loader()                 -- 之后 require("foo") 可找 foo.mdo
+mdo.dofile("examples/do_maybe_foo.mdo")
+local chunk = assert(mdo.loadfile("examples/do_maybe_foo.mdo"))
 ```
 
 库 API（`src/mdo.lua`）：
@@ -18,6 +37,11 @@ lua examples/do_maybe_foo.lua
 |------|------|
 | `mdo.expand(body, monad)` | 展开 `@mdo`/`@end` 之间的正文 → Lua 表达式字符串 |
 | `mdo.preprocess(src)` | 处理整文件，替换所有 `@mdo … @end` |
+| `mdo.compile(src[, chunkname])` | 预处理后 `load`；→ function 或 nil, err |
+| `mdo.loadfile(path)` | 读文件并 compile（chunkname=`@path [mdo]`） |
+| `mdo.dofile(path, ...)` | loadfile 并调用，参数同 Lua `dofile` |
+| `mdo.require_searcher(modname)` | package 搜索器（`.mdo`） |
+| `mdo.install_loader()` | 幂等插入 `package.searchers` / `loaders` |
 
 `monad` 参数目前主要用于校验与文档上下文；真正的绑定靠 monadic **值**上的 `>>` / `..`（见 `monad.makeMonad` 元表糖），因此 EXPR 里请写完整调用（如 `Maybe.Just(3)`）。
 
@@ -86,9 +110,14 @@ end
 | `examples/do_maybe_foo.mdo` | LYAH `foo`：`Just "3!"` |
 | `examples/do_walk_the_line.mdo` | 走钢丝 routine → `Just (3,2)` |
 
-仓库同时提交生成的 `.lua`；改 `.mdo` 后请重新跑 `tools/mdo.lua`。
+仓库同时提交生成的 `.lua` 便于对照；日常更推荐 `--run` / `mdo.dofile` / `install_loader` 后 `require`。改 `.mdo` 后若仍要提交 `.lua`，再跑 `tools/mdo.lua`（无 `--run`）。
+
+## 可选缓存（`MDO_CACHE`）
+
+默认**不**写旁路 `.lua`。若设置环境变量 `MDO_CACHE=1`，则 `mdo.dofile` 会把预处理结果写到同路径的 `.lua`（例如 `foo.mdo` → `foo.lua`）。关闭默认写入是为了避免意外覆盖已提交的生成物。
 
 ## 限制（当前版本）
+
 
 1. **EXPR 必须单行**（不做完整 Lua 解析）。
 2. **无模式匹配失败**（不像 Haskell 的 `Just x <- …` 失败进 fail）。

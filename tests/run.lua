@@ -446,6 +446,46 @@ return ]] .. walk_exp
   local wr = assert(load(walk_chunk, "walk-routine"))()
   assert_true(Maybe.isJust(wr) and wr.value[1] == 3 and wr.value[2] == 2,
               "mdo walk routine Just (3,2)")
+
+  ------------------------------------------------------------
+  -- compile / loadfile / dofile / install_loader
+  ------------------------------------------------------------
+  mdo.install_loader()
+  mdo.install_loader() -- idempotent
+
+  local chunk = assert(mdo.loadfile("examples/do_maybe_foo.mdo"))
+  assert_true(type(chunk) == "function", "mdo.loadfile returns function")
+  chunk() -- runs example (prints / asserts)
+
+  -- dofile 示例 .mdo
+  mdo.dofile("examples/do_walk_the_line.mdo")
+
+  -- 小临时文件：@mdo + 返回值，验证 dofile 传参与返回
+  local tmp = os.tmpname() .. ".mdo"
+  local tf = assert(io.open(tmp, "w"))
+  tf:write([[
+local Maybe = require("maybe")
+local a = ...
+local r = @mdo Maybe
+  x <- Maybe.Just(a or 0)
+  Maybe.Just(x + 1)
+@end
+return r
+]])
+  tf:close()
+  local got = mdo.dofile(tmp, 41)
+  assert_eq(got, Maybe.Just(42), "mdo.dofile temp @mdo Just(42)")
+  os.remove(tmp)
+
+  -- compile 直接从字符串
+  local cfn, cerr = mdo.compile([[
+local Maybe = require("maybe")
+return @mdo Maybe
+  Maybe.Just(9)
+@end
+]], "mdo-compile-test")
+  assert_true(cfn ~= nil, "mdo.compile ok" .. (cfn and "" or (": " .. tostring(cerr))))
+  assert_eq(cfn(), Maybe.Just(9), "mdo.compile result Just(9)")
 end
 
 ------------------------------------------------------------

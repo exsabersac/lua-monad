@@ -146,13 +146,23 @@ local foo = @mdo Maybe
 @end
 ```
 
+**推荐直接执行 `.mdo`（自动预处理）：**
+
+```bash
+lua tools/mdo.lua --run examples/do_maybe_foo.mdo
+lua tools/run_mdo.lua examples/do_walk_the_line.mdo   # routine → Just (3,2)
+```
+
+或写 `.lua` 后再跑：
+
 ```bash
 lua tools/mdo.lua examples/do_maybe_foo.mdo   # 生成 .lua
 lua examples/do_maybe_foo.lua
-lua examples/do_walk_the_line.lua             # routine → Just (3,2)
 ```
 
-语法规则、限制与 API 见 [`docs/do语法.md`](docs/do语法.md)。库：`src/mdo.lua`；CLI：`tools/mdo.lua`。
+程序内：`mdo.install_loader()` 后可用 `require` 加载 `.mdo`；或 `mdo.dofile` / `mdo.loadfile`。
+
+语法规则、限制与 API 见 [`docs/do语法.md`](docs/do语法.md)。库：`src/mdo.lua`；CLI：`tools/mdo.lua`、`tools/run_mdo.lua`。
 
 ## Walk the line（LYAH）
 
@@ -182,10 +192,12 @@ lua examples/demo.lua
 # LYAH Walk the line（Maybe 走钢丝）
 lua examples/walk_the_line.lua
 
-# do-notation：先预处理 .mdo（若已提交生成物可直接跑 .lua）
+# do-notation：直接跑 .mdo（推荐）
+lua tools/mdo.lua --run examples/do_maybe_foo.mdo
+lua tools/run_mdo.lua examples/do_walk_the_line.mdo
+# 或只生成 .lua 再跑
 lua tools/mdo.lua examples/do_maybe_foo.mdo
 lua examples/do_maybe_foo.lua
-lua examples/do_walk_the_line.lua
 
 # Cont / CPS 协程示例
 lua examples/cont_callcc.lua
@@ -207,7 +219,10 @@ lua-monad/
   src/status.lua
   src/cont.lua
   src/coro.lua               # Cont-based CPS coro
-  tests/run.lua              # 定律 + 糖 + coro 断言
+  src/mdo.lua                # @mdo 预处理 + loadfile/dofile/loader
+  tests/run.lua              # 定律 + 糖 + coro + mdo 断言
+  tools/mdo.lua              # CLI：写 .lua 或 --run
+  tools/run_mdo.lua          # --run 薄包装
   examples/demo.lua
   examples/walk_the_line.lua   # LYAH Maybe 示例
   examples/cont_callcc.lua     # callCC 提前退出
@@ -216,6 +231,7 @@ lua-monad/
   examples/coro_interactive.lua# yield 请求 / resume 回答
   docs/设计说明.md
   docs/API.md
+  docs/do语法.md
   README.md
 ```
 
