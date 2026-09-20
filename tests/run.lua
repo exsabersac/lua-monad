@@ -906,6 +906,107 @@ do
 end
 
 ------------------------------------------------------------
+-- Cont.withEnv 属性：AfterStep / BeforeStep 管道顺序
+------------------------------------------------------------
+do
+  local cont_env = require("cont_env")
+
+  -- AfterStep：源码先写 later，排到 early 之后
+  local pipe_as = Cont.withEnv(function(_ENV)
+    __AfterStep__("early")
+    function later(x) return Cont.unit(x * 10) end
+    function early(x) return Cont.unit(x + 1) end
+  end)
+  assert_eq(Cont.evalCont(pipe_as(2)), 30, "attr AfterStep: (2+1)*10")
+
+  -- BeforeStep：mid 插到 last 前
+  local pipe_bs = Cont.withEnv(function(_ENV)
+    function first(x) return Cont.unit(x + 1) end
+    function last(x) return Cont.unit(x * 3) end
+    __BeforeStep__("last")
+    function mid(x) return Cont.unit(x + 10) end
+  end)
+  assert_eq(Cont.evalCont(pipe_bs(1)), 36, "attr BeforeStep: ((1+1)+10)*3")
+
+  -- 无约束仍定义序
+  local pipe_def = Cont.withEnv(function(_ENV)
+    function a(x) return Cont.unit(x + 1) end
+    function b(x) return Cont.unit(x * 2) end
+  end)
+  assert_eq(Cont.evalCont(pipe_def(3)), 8, "attr order default def order")
+
+  -- 与 Helper 混用
+  local pipe_h = Cont.withEnv(function(_ENV)
+    __Helper__()
+    function bump(x) return Cont.unit(x + 100) end
+    __AfterStep__("a")
+    function b(x)
+      return bump(x) >> function(y) return Cont.unit(y * 2) end
+    end
+    function a(x) return Cont.unit(x + 1) end
+  end)
+  assert_eq(Cont.evalCont(pipe_h(3)), 208, "attr AfterStep + Helper")
+
+  -- 同名重定义更新约束
+  local pipe_re = Cont.withEnv(function(_ENV)
+    __AfterStep__("a")
+    function c(x) return Cont.unit(x + 1) end
+    function a(x) return Cont.unit(x + 10) end
+    function b(x) return Cont.unit(x * 2) end
+    -- 重定义 c：去掉 AfterStep(a)，改为 BeforeStep(b) → a >> c >> b
+    __BeforeStep__("b")
+    function c(x) return Cont.unit(x + 1) end
+  end)
+  -- a= +10, c=+1, b=*2；输入 1 → 11 → 12 → 24
+  assert_eq(Cont.evalCont(pipe_re(1)), 24, "attr redefine updates order constraints")
+
+  -- 环：报错
+  local ok_cycle = pcall(function()
+    Cont.withEnv(function(_ENV)
+      __AfterStep__("b")
+      function a(x) return Cont.unit(x) end
+      __AfterStep__("a")
+      function b(x) return Cont.unit(x) end
+    end)
+  end)
+  assert_true(not ok_cycle, "attr AfterStep cycle errors")
+
+  -- 缺目标：报错
+  local ok_miss = pcall(function()
+    Cont.withEnv(function(_ENV)
+      __AfterStep__("nope")
+      function a(x) return Cont.unit(x) end
+    end)
+  end)
+  assert_true(not ok_miss, "attr AfterStep missing target errors")
+
+  local ok_miss2 = pcall(function()
+    Cont.withEnv(function(_ENV)
+      __BeforeStep__("ghost")
+      function a(x) return Cont.unit(x) end
+    end)
+  end)
+  assert_true(not ok_miss2, "attr BeforeStep missing target errors")
+
+  -- AfterStep 指向 Helper → 缺目标
+  local ok_h = pcall(function()
+    Cont.withEnv(function(_ENV)
+      __Helper__()
+      function h(x) return Cont.unit(x) end
+      __AfterStep__("h")
+      function a(x) return Cont.unit(x) end
+    end)
+  end)
+  assert_true(not ok_h, "attr AfterStep on Helper errors")
+
+  -- 独立 attrs 描述符
+  local d = cont_env.attrs.__AfterStep__("x")
+  assert_true(type(d) == "table" and d.__attr_after_step == "x", "attrs.__AfterStep__ descriptor")
+  local d2 = cont_env.attrs.__BeforeStep__("y")
+  assert_true(type(d2) == "table" and d2.__attr_before_step == "y", "attrs.__BeforeStep__ descriptor")
+end
+
+------------------------------------------------------------
 io.stdout:write("\n")
 if failures > 0 then
   io.stderr:write(failures .. " failure(s)\n")

@@ -29,7 +29,7 @@ assert(Cont.evalCont(pipe(3)) == 8)  -- (3+1)*2
 | 规则 | 说明 |
 |------|------|
 | 默认收集 | env 上每次**函数**写入都记为步骤；无 ContPipe / 无标志位 |
-| 顺序 | 按**首次出现**的名字顺序 `foldl (>>) Cont.unit` |
+| 顺序 | 默认按**首次出现**名顺序；可用 `__AfterStep__` / `__BeforeStep__` 拓扑重排（见下） |
 | 同名再定义 | **原地替换**该名对应步骤，不改变相对次序 |
 | 非函数赋值 | 普通字段，**不进**管道（数字/表等辅助数据 ok） |
 | 助手函数 | 步内 `local function`；或 `__Helper__()` / `__NotStep__()` 后再赋函数（存 env 不进管道）；未标注则挂到 env 的函数一律当步骤 |
@@ -156,8 +156,10 @@ end)
 |------|------|
 | `__Helper__()` / `__NotStep__()` | 函数存到 env，**不**加入 `>>` 管道顺序（解决「助手挂在 env 上」） |
 | `__Wrap__(wrapper)` | `wrapper(step) → new_step`；注册时包装 |
-| `__Before__(pre)` | 糖：`λx. pre(x) >> step`（`pre : a → Cont r a` 或兼容） |
-| `__After__(post)` | 糖：`λx. step(x) >> post` |
+| `__Before__(pre)` | **Cont 包装**糖：`λx. pre(x) >> step`（改步骤本身，不改管道位置） |
+| `__After__(post)` | **Cont 包装**糖：`λx. step(x) >> post`（改步骤本身，不改管道位置） |
+| `__AfterStep__(name)` | **管道顺序**：把下一步 `F` 排到步骤 `name` **之后**（拓扑边 `name → F`） |
+| `__BeforeStep__(name)` | **管道顺序**：把下一步 `F` 排到步骤 `name` **之前**（拓扑边 `F → name`） |
 | `__Until__(pred[, max])` | 每步结果 `a` 若 `pred(a)` 则停，否则把 `a` 再喂给 step；默认 `max=1000` 防死循环 |
 | `__Timeout__(secs[, on_timeout])` | **合作式**超时：`t0=os.clock()`，`step(x) >>` 得 `a` 后若 `elapsed>secs`，则 `on_timeout(a, elapsed)` 或默认 `Cont.unit({tag="timeout", value=a, elapsed})`。**不能**打断同步步中途 |
 | `__Retry__(n, pred)` | `pred(a)` 表示需要重试；始终用**原始** `x` 再跑 `step`，最多 `n` 次；若最后一次仍 `pred` 则返回该 `a` |
@@ -174,6 +176,26 @@ function step(x) ... end
 ```
 
 `callCC`：请在步骤体内直接用 `Cont.callCC`（见 `examples/cont_env_callcc.lua`）；本 MVP 不另做 `__CallCC__` 包装。
+
+### `__Before__`/`__After__`（Cont 包装）vs `__BeforeStep__`/`__AfterStep__`（管道顺序）
+
+| | Cont 包装 | 管道顺序 |
+|--|-----------|----------|
+| 属性 | `__Before__(pre)` / `__After__(post)` | `__BeforeStep__(name)` / `__AfterStep__(name)` |
+| 作用 | 把 `pre`/`post` **串进该步骤的 Cont** | 改变步骤在 `>>` 链中的**相对位置** |
+| 不改什么 | 不改步骤在管道中的名次序 | 不改步骤函数体（除非同时叠了包装属性） |
+
+无 `AfterStep`/`BeforeStep` 时，仍按定义序（首次出现名）折叠。有约束时：以定义序为节点，把约束当有向边，**Kahn 拓扑排序**；平局按定义序；环或缺目标（含指向 Helper/未注册名）→ 报错。同名重定义会**更新**该名上的顺序约束。
+
+```lua
+-- 源码里先写 later，再用 AfterStep 排到 early 之后 → early >> later
+local pipe = Cont.withEnv(function(_ENV)
+  __AfterStep__("early")
+  function later(x) return Cont.unit(x * 10) end
+  function early(x) return Cont.unit(x + 1) end
+end)
+assert(Cont.evalCont(pipe(2)) == 30)  -- (2+1)*10
+```
 
 ### 用法示例
 
@@ -209,7 +231,8 @@ end)
 |------|------|
 | [`examples/cont_env_attrs_helper.lua`](../examples/cont_env_attrs_helper.lua) | `__Helper__` vs 误把助手当步骤 |
 | [`examples/cont_env_attrs_until.lua`](../examples/cont_env_attrs_until.lua) | `__Until__` 增长到 ≥ 10 |
-| [`examples/cont_env_attrs_before_after.lua`](../examples/cont_env_attrs_before_after.lua) | `__Before__` / `__After__` 日志与 `cont_env.attrs` |
+| [`examples/cont_env_attrs_before_after.lua`](../examples/cont_env_attrs_before_after.lua) | `__Before__` / `__After__` Cont 包装日志与 `cont_env.attrs` |
+| [`examples/cont_env_attrs_after_step.lua`](../examples/cont_env_attrs_after_step.lua) | `__AfterStep__` / `__BeforeStep__` 管道重排（对比 Cont 包装） |
 | [`examples/cont_env_attrs_timeout.lua`](../examples/cont_env_attrs_timeout.lua) | `__Timeout__` 合作式超时（含自定义 `on_timeout`） |
 | [`examples/cont_env_attrs_retry.lua`](../examples/cont_env_attrs_retry.lua) | `__Retry__` 用原输入重试 |
 | [`examples/cont_env_attrs_require_trace.lua`](../examples/cont_env_attrs_require_trace.lua) | `__Require__` + `__Trace__` |
@@ -237,5 +260,6 @@ __Trace__("step-name")               -- print [step-name] before/after
 - 属性必须紧跟**函数**赋值；若随后赋非函数，或 body 结束时仍有未消耗属性 → **报错**。
 - 不可覆盖 `__Helper__` 等属性构造器名。
 - 同名先做步骤再 `__Helper__` 重定义 → 从管道移除，仍可在 env 上读到函数。
-- 独立（非 env）包装：`cont_env.attrs.__Before__(pre)(step)` 等，见 `src/cont_env.lua`。
+- `__AfterStep__` / `__BeforeStep__`：目标名须为**管道步骤**（非 Helper）；环或缺目标 → 报错；同名重定义更新约束。
+- 独立（非 env）：`cont_env.attrs.__Before__(pre)(step)` 等包装；`attrs.__AfterStep__(name)` / `__BeforeStep__(name)` 返回描述符（顺序约束仅在 `withEnv` 内生效），见 `src/cont_env.lua`。
 

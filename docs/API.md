@@ -180,11 +180,12 @@
 
 | 函数 | 说明 |
 |------|------|
-| `withEnv(body)` | `body(env)` 内写入的函数为步骤；同名替换保序；非函数不当步骤；支持 Helper/Wrap/Before/After/Until/Timeout/Retry/Require/Trace 属性；→ `composed` |
+| `withEnv(body)` | `body(env)` 内写入的函数为步骤；同名替换保序；非函数不当步骤；支持 Helper/Wrap/Before/After/Until/Timeout/Retry/Require/Trace/**AfterStep/BeforeStep** 属性；→ `composed` |
 | `Cont.withEnv` | 与上同一实现（`cont_env` 加载时挂载；`cont` 首次调用延迟 require） |
 | `attrs.__Helper__` / `__NotStep__` | 独立 API：返回 helper sentinel；env 内调用则排队 |
 | `attrs.__Wrap__(w)` | `(w)(step) → new_step` |
-| `attrs.__Before__(pre)` / `__After__(post)` | 糖包装；env 内排队 |
+| `attrs.__Before__(pre)` / `__After__(post)` | Cont 包装糖；env 内排队 |
+| `attrs.__AfterStep__(name)` / `__BeforeStep__(name)` | 管道顺序约束（拓扑）；独立 API 返回描述符；env 内排队 |
 | `attrs.__Until__(pred[, max])` | 循环直到 `pred`；默认 max=1000 |
 | `attrs.__Timeout__(secs[, on_timeout])` | 合作式超时（步后 `os.clock`）；默认 `{tag="timeout", value, elapsed}` |
 | `attrs.__Retry__(n, pred)` | `pred(a)` 则用原 `x` 重试，最多 `n` 次 |

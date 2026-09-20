@@ -155,7 +155,7 @@ bind(ma, f)  = function(k) return ma(function(a) return f(a)(k) end) end
 
 在 Cont 专用 env 里定义步骤函数，**默认**按定义序自动 `>>`（无 `ContPipe`）。详见 [`docs/Cont环境组合.md`](docs/Cont环境组合.md)。
 
-示例：`examples/cont_env_pipe.lua`（基础）；更复杂：`cont_env_callcc.lua`（callCC 中止）、`cont_env_coro_mix.lua`（与 CPS Coro 混用）、`cont_env_data_driven.lua`（配置字段）、`cont_env_fact_pipeline.lua`（长链 / 阶乘 / mapCont）；互调 / 局部函数 / 管道当一步：`cont_env_mutual_pipes.lua`、`cont_env_local_helpers.lua`、`cont_env_pipe_as_step.lua`；属性：`cont_env_attrs_helper.lua`、`cont_env_attrs_until.lua`、`cont_env_attrs_before_after.lua`、`cont_env_attrs_timeout.lua`、`cont_env_attrs_retry.lua`、`cont_env_attrs_require_trace.lua`。
+示例：`examples/cont_env_pipe.lua`（基础）；更复杂：`cont_env_callcc.lua`（callCC 中止）、`cont_env_coro_mix.lua`（与 CPS Coro 混用）、`cont_env_data_driven.lua`（配置字段）、`cont_env_fact_pipeline.lua`（长链 / 阶乘 / mapCont）；互调 / 局部函数 / 管道当一步：`cont_env_mutual_pipes.lua`、`cont_env_local_helpers.lua`、`cont_env_pipe_as_step.lua`；属性：`cont_env_attrs_helper.lua`、`cont_env_attrs_until.lua`、`cont_env_attrs_before_after.lua`（Cont 包装）、`cont_env_attrs_after_step.lua`（管道顺序）、`cont_env_attrs_timeout.lua`、`cont_env_attrs_retry.lua`、`cont_env_attrs_require_trace.lua`。
 
 ```lua
 local pipe = Cont.withEnv(function(_ENV)
@@ -311,7 +311,8 @@ lua-monad/
   examples/cont_env_pipe_as_step.lua # 管道当一步
   examples/cont_env_attrs_helper.lua  # __Helper__ 助手
   examples/cont_env_attrs_until.lua   # __Until__ 循环
-  examples/cont_env_attrs_before_after.lua # Before/After
+  examples/cont_env_attrs_before_after.lua # Before/After Cont wrap
+  examples/cont_env_attrs_after_step.lua  # AfterStep/BeforeStep 顺序
   examples/cont_env_attrs_timeout.lua # __Timeout__ 合作式超时
   examples/cont_env_attrs_retry.lua   # __Retry__
   examples/cont_env_attrs_require_trace.lua # __Require__ + __Trace__
