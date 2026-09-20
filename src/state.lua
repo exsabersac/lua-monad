@@ -1,4 +1,5 @@
 -- State monad: function(s) return a, s end
+-- Operable values are callable proxies { _fn = f }.
 
 local monad = require("monad")
 
@@ -21,34 +22,34 @@ local M = monad.makeMonad({
 })
 
 function M.get()
-  return function(s)
+  return M.wrap(function(s)
     return s, s
-  end
+  end)
 end
 
 function M.put(s_new)
-  return function(_s)
+  return M.wrap(function(_s)
     return nil, s_new
-  end
+  end)
 end
 
 function M.modify(f)
-  return function(s)
+  return M.wrap(function(s)
     return nil, f(s)
-  end
+  end)
 end
 
 function M.runState(ma, s0)
-  return ma(s0)
+  return M.unwrap(ma)(s0)
 end
 
 function M.evalState(ma, s0)
-  local a, _ = ma(s0)
+  local a, _ = M.runState(ma, s0)
   return a
 end
 
 function M.execState(ma, s0)
-  local _, s = ma(s0)
+  local _, s = M.runState(ma, s0)
   return s
 end
 

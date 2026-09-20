@@ -27,8 +27,12 @@ local M = monad.makeMonad({
   end,
 })
 
-M.singleton = singleton
-M.concat = concat
-M.empty = function() return {} end
+M.singleton = M.unit
+M.concat = function(xss)
+  return M.wrap(concat(xss))
+end
+M.empty = function()
+  return M.wrap({})
+end
 
 return M

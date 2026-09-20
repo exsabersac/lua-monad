@@ -16,7 +16,11 @@ local failures = 0
 local function eq(a, b)
   if type(a) ~= type(b) then return false end
   if type(a) ~= "table" then return a == b end
-  -- shallow structural compare for tagged values / arrays
+  -- Unwrap function-shaped proxies for structural compare of payloads if both are proxies
+  if a._fn ~= nil and b._fn ~= nil then
+    return a._fn == b._fn
+  end
+  -- shallow structural compare for tagged values / arrays (metatable ignored)
   local ka, kb = 0, 0
   for k in pairs(a) do ka = ka + 1 end
   for k in pairs(b) do kb = kb + 1 end
@@ -81,6 +85,17 @@ do
 
   assert_eq(Maybe.bind(Maybe.Nothing(), f), Maybe.Nothing(), "Maybe Nothing short-circuit")
   assert_eq(Maybe.then_(Maybe.Just(3), function(x) return x * 10 end), Maybe.Just(30), "Maybe then_")
+
+  -- Operator sugar: >> and ..
+  local r1 = Maybe.Just(2) >> function(x) return Maybe.Just(x * 3) end
+  assert_eq(r1, Maybe.Just(6), "Maybe >> bind")
+  local r2 = Maybe.Nothing() >> f
+  assert_eq(r2, Maybe.Nothing(), "Maybe >> Nothing short-circuit")
+  local r3 = Maybe.Just(1) .. Maybe.Just(99)
+  assert_eq(r3, Maybe.Just(99), "Maybe .. sequence discard left")
+  local r4 = Maybe.Nothing() .. Maybe.Just(99)
+  assert_eq(r4, Maybe.Nothing(), "Maybe .. Nothing short-circuit")
+  assert_eq(Maybe(7), Maybe.Just(7), "Maybe(x) module call == unit")
 end
 
 ------------------------------------------------------------
@@ -94,6 +109,12 @@ do
   assert_eq(List.bind({ 1, 2 }, function(x) return { x, x * 2 } end),
             { 1, 2, 2, 4 }, "List bind flatten")
   assert_eq(List.bind({}, f), {}, "List empty bind")
+
+  local xs = List.wrap({ 1, 2 }) >> function(x) return List.wrap({ x, x * 10 }) end
+  assert_eq(xs, { 1, 10, 2, 20 }, "List >> bind flatten")
+  local seq = List.unit(1) .. List.wrap({ 7, 8 })
+  assert_eq(seq, { 7, 8 }, "List .. sequence discard left")
+  assert_eq(List(3), { 3 }, "List(x) module call == unit")
 end
 
 ------------------------------------------------------------
@@ -126,6 +147,13 @@ do
   local a, s = State.runState(prog, 3)
   assert_eq(a, 26, "State get/put/modify value")
   assert_eq(s, 26, "State get/put/modify state")
+
+  local sugar = State.unit(1) >> function(x)
+    return State.put(x + 40) .. State.get()
+  end
+  local a2, s2 = State.runState(sugar, 0)
+  assert_eq(a2, 41, "State >> / .. value")
+  assert_eq(s2, 41, "State >> / .. state")
 end
 
 ------------------------------------------------------------
@@ -139,6 +167,10 @@ do
   assert_eq(Status.bind(Status.Err("boom"), f), Status.Err("boom"), "Status Err short-circuit")
   assert_eq(Status.bind(Status.Ok(7), function(x) return Status.Err("nope") end),
             Status.Err("nope"), "Status Ok then Err")
+
+  assert_eq(Status.Ok(2) >> f, Status.Ok(3), "Status >> bind")
+  assert_eq(Status.Ok(1) .. Status.Ok(5), Status.Ok(5), "Status .. sequence")
+  assert_eq(Status.Err("x") .. Status.Ok(5), Status.Err("x"), "Status .. Err short-circuit")
 end
 
 ------------------------------------------------------------
@@ -159,6 +191,19 @@ do
     function(x) return x * 10 end
   )
   assert_eq(r, 50, "Cont runCont")
+
+  local r2 = Cont.runCont(
+    Cont.unit(2) >> function(x) return Cont.unit(x + 3) end,
+    function(x) return x * 10 end
+  )
+  assert_eq(r2, 50, "Cont >> bind")
+
+  local r3 = Cont.runCont(
+    Cont.unit(1) .. Cont.unit(42),
+    function(x) return x end
+  )
+  assert_eq(r3, 42, "Cont .. sequence discard left")
+  assert_eq(Cont.runCont(Cont(9), function(x) return x end), 9, "Cont(x) module call")
 end
 
 ------------------------------------------------------------
@@ -194,6 +239,15 @@ do
   -- No yield: immediate Done
   local immediate = Coro.start(Cont.unit(99))
   assert_true(Coro.isDone(immediate) and immediate.value == 99, "coro no-yield Done")
+
+  -- Coro with operator sugar
+  local body3 = Coro.yield(1) >> function(v)
+    return Cont.unit(v + 10)
+  end
+  local c1 = Coro.start(body3)
+  assert_true(Coro.isYielded(c1) and c1.value == 1, "coro sugar yield")
+  local c2 = Coro.resume(c1, 7)
+  assert_true(Coro.isDone(c2) and c2.value == 17, "coro sugar done")
 end
 
 ------------------------------------------------------------

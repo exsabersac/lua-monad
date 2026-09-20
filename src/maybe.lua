@@ -33,8 +33,11 @@ local M = monad.makeMonad({
   end,
 })
 
-M.Just = Just
-M.Nothing = Nothing
+-- Constructors return operable (metatable-wrapped) values
+M.Just = M.unit
+M.Nothing = function()
+  return M.wrap(Nothing())
+end
 M.isJust = isJust
 M.isNothing = isNothing
 M.fromJust = fromJust

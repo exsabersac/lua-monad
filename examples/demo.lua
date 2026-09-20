@@ -11,40 +11,38 @@ local Cont = require("cont")
 local Coro = require("coro")
 
 print("=== Maybe ===")
-local m = Maybe.bind(Maybe.Just(3), function(x)
+local m = Maybe.Just(3) >> function(x)
   if x > 0 then return Maybe.Just(x * 2) else return Maybe.Nothing() end
-end)
-print("Just(3) >>= double:", m.tag, m.value)
+end
+print("Just(3) >> double:", m.tag, m.value)
 
 print("\n=== List ===")
-local xs = List.bind({ 1, 2, 3 }, function(x)
-  return { x, x * 10 }
-end)
-io.write("bind flatten: ")
+local xs = List.wrap({ 1, 2, 3 }) >> function(x)
+  return List.wrap({ x, x * 10 })
+end
+io.write(">> flatten: ")
 for i, v in ipairs(xs) do io.write(v .. (i < #xs and "," or "")) end
 print()
 
 print("\n=== State ===")
-local prog = State.bind(State.get(), function(n)
-  return State.bind(State.put(n + 1), function()
-    return State.unit("was " .. tostring(n))
-  end)
-end)
+local prog = State.get() >> function(n)
+  return State.put(n + 1) .. State.unit("was " .. tostring(n))
+end
 local a, s = State.runState(prog, 41)
 print("runState:", a, "new state:", s)
 
 print("\n=== Status ===")
-local ok = Status.bind(Status.Ok(10), function(x) return Status.Ok(x / 2) end)
-local err = Status.bind(Status.Err("fail"), function(x) return Status.Ok(x) end)
+local ok = Status.Ok(10) >> function(x) return Status.Ok(x / 2) end
+local err = Status.Err("fail") .. Status.Ok(1)
 print("Ok path:", ok.tag, ok.value)
 print("Err path:", err.tag, err.error)
 
 print("\n=== Cont + CPS coro ===")
-local body = Cont.bind(Coro.yield("hello"), function(reply)
-  return Cont.bind(Coro.yield("got:" .. tostring(reply)), function(reply2)
+local body = Coro.yield("hello") >> function(reply)
+  return Coro.yield("got:" .. tostring(reply)) >> function(reply2)
     return Cont.unit("finished with " .. tostring(reply2))
-  end)
-end)
+  end
+end
 
 local step = Coro.start(body)
 while Coro.isYielded(step) do

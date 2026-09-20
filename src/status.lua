@@ -28,8 +28,10 @@ local M = monad.makeMonad({
   end,
 })
 
-M.Ok = Ok
-M.Err = Err
+M.Ok = M.unit
+M.Err = function(e)
+  return M.wrap(Err(e))
+end
 M.isOk = isOk
 M.isErr = isErr
 

@@ -19,6 +19,46 @@ local monad = require("monad")
 local m = monad.makeMonad({ unit = ..., bind = ... })
 ```
 
+## 元表符号糖
+
+`makeMonad` 会给 monadic 值挂上共享元表，支持更接近 Haskell 的写法（需 **Lua 5.3+ / 5.4**）：
+
+| 语法 | 元方法 | 含义 |
+|------|--------|------|
+| `ma >> f` | `__shr` | `m.bind(ma, f)`（Haskell `>>=`） |
+| `ma .. mb` | `__concat` | 先跑 `ma` 再丢弃其结果，得到 `mb`（Haskell `>>`） |
+| `Maybe(x)` | 模块 `__call` | 等价于 `Maybe.unit(x)` |
+
+- **表形** monad（Maybe / List / Status）：直接在值表上 `setmetatable`，保留 `tag`、`value`、数组部分等字段。
+- **函数形** monad（Cont / State）：包成可调用代理 `{ _fn = f }`（`__call` 转发）；`runCont` / `runState` 等会自动 `unwrap`。也可用 `m.unwrap` / `m.wrap`。
+
+示例：
+
+```lua
+local Maybe = require("maybe")
+local Cont = require("cont")
+
+-- Maybe：绑定与顺序
+local r = Maybe.Just(2) >> function(x)
+  return Maybe.Just(x * 3)
+end
+-- r.tag == "just", r.value == 6
+
+local s = Maybe.Just(1) .. Maybe.Just(99)   -- 丢弃左边，得到 Just(99)
+local n = Maybe.Nothing() .. Maybe.Just(99) -- Nothing 短路
+
+-- 模块当构造器
+assert(Maybe(7).value == 7)
+
+-- Cont
+local v = Cont.runCont(
+  Cont.unit(2) >> function(x) return Cont.unit(x + 3) end,
+  function(x) return x * 10 end
+)  -- 50
+```
+
+原有的 `bind` / `then_` / `map` API 不变。
+
 ## 各实例
 
 ### Maybe — 可失败计算
@@ -36,7 +76,7 @@ local m = monad.makeMonad({ unit = ..., bind = ... })
 
 ### State — 带状态的计算
 
-表示成 `function(s) return a, s end`。
+表示成 `function(s) return a, s end`（对外为可调用代理）。
 
 辅助：`get` / `put` / `modify` / `runState` / `evalState` / `execState`。
 
@@ -51,7 +91,7 @@ local m = monad.makeMonad({ unit = ..., bind = ... })
 
 ### Cont — 续延 monad
 
-`Cont r a ≈ (a → r) → r`，在 Lua 里就是「接受续延 `k` 的函数」：
+`Cont r a ≈ (a → r) → r`，在 Lua 里就是「接受续延 `k` 的函数」（对外为可调用代理）：
 
 ```lua
 unit(a)      = function(k) return k(a) end
@@ -73,7 +113,7 @@ API：
 - `Coro.start(ma)` — 以「最终值包成 Done」为顶层续延启动
 - `Coro.resume(y, b)` — 把 `b` 喂给挂起的 `cont`
 
-适合教学：看清「yield = 捕获当前续延」的本质。
+适合教学：看清「yield = 捕获当前续延」的本质。也可与 Cont 的 `>>` 混用。
 
 ## 如何运行
 
@@ -95,7 +135,7 @@ lua examples/demo.lua
 
 ```
 lua-monad/
-  src/monad.lua    # makeMonad
+  src/monad.lua    # makeMonad + 元表符号糖
   src/maybe.lua
   src/list.lua
   src/state.lua

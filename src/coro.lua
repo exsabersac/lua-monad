@@ -22,9 +22,9 @@ end
 -- yield : a -> Cont (Done|Yielded) ()
 -- Suspends with value a; resume supplies the next value into the continuation.
 local function yield(v)
-  return function(k)
+  return Cont.wrap(function(k)
     return Yielded(v, k)
-  end
+  end)
 end
 
 -- start : Cont (Done|Yielded) a -> Done|Yielded
