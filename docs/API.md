@@ -41,6 +41,7 @@
 | `bind` / `then_` / … | 见 `makeMonad`；`Nothing` 短路 |
 | `isJust(m)` / `isNothing(m)` | 谓词 |
 | `fromJust(m)` | 取 `value`；非 Just 则 assert |
+| `runDo(body)` | 顺序 do；见 `do_coro` |
 
 ---
 
@@ -228,3 +229,22 @@ lua tools/run_mdo.lua INPUT.mdo [args...]      # --run 薄包装
 ```
 
 `--run` 会设置 `package.path` 含仓库 `src/?.lua`、调用 `install_loader()`，再 `dofile`。
+
+---
+
+## `do_coro` — `src/do_coro.lua`（顺序 do / 原生 coroutine）
+
+用原生 `coroutine` 组织用户代码的顺序写法；底层仍是 `bind`。与 Cont CPS `Coro.yield`、`@mdo` 预处理器均不同。详见 [`顺序do_coro.md`](顺序do_coro.md)。
+
+| 函数 | 说明 |
+|------|------|
+| `perform(ma)` | 仅在 `runDo` body 内：yield `ma`，恢复得到裸值 `a` |
+| `runDo(M, body)` / `runDo(bind, body)` | 驱动 body；`dead` 时返回 body 的 monadic 返回值 |
+| `attach(M)` / `install(M)` | 挂 `M.runDo(body)` 薄包装 |
+
+便捷：`Maybe.runDo` / `List.runDo` / `Identity.runDo` / `Status.runDo` / `Reader.runDo` / `Writer.runDo`（及 `WriterList`）。
+
+```bash
+lua examples/do_coro_maybe_foo.lua
+lua examples/do_coro_walk_the_line.lua
+```

@@ -1,5 +1,5 @@
 #!/usr/bin/env lua
--- tests/run.lua — 单子定律 + 符号糖 + Cont CPS 协程 + Identity/Reader/Writer/RWS + mdo 断言
+-- tests/run.lua — 单子定律 + 符号糖 + Cont CPS 协程 + Identity/Reader/Writer/RWS + mdo + do_coro 断言
 --
 -- 对每个 monad 检查三条定律（在样本上）：
 --   左单位：  unit(a) >>= f      ≡  f(a)
@@ -617,6 +617,84 @@ return @mdo Maybe
   assert_true(cfn ~= nil, "mdo.compile ok" .. (cfn and "" or (": " .. tostring(cerr))))
   assert_eq(cfn(), Maybe.Just(9), "mdo.compile result Just(9)")
 end
+
+------------------------------------------------------------
+-- do_coro：Maybe runDo foo / walk；perform 在 runDo 外报错
+------------------------------------------------------------
+do
+  local do_coro = require("do_coro")
+  local perform = do_coro.perform
+
+  local foo = Maybe.runDo(function()
+    local x = perform(Maybe.Just(3))
+    local y = perform(Maybe.Just("!"))
+    return Maybe.Just(tostring(x) .. y)
+  end)
+  assert_eq(foo, Maybe.Just("3!"), "do_coro Maybe.runDo foo => Just \"3!\"")
+
+  -- 也可 do_coro.runDo(Maybe, body)
+  local foo2 = do_coro.runDo(Maybe, function()
+    local x = perform(Maybe.Just(3))
+    local y = perform(Maybe.Just("!"))
+    return Maybe.Just(tostring(x) .. y)
+  end)
+  assert_eq(foo2, Maybe.Just("3!"), "do_coro.runDo(Maybe, foo)")
+
+  local function landLeft(n)
+    return function(pole)
+      local left, right = pole[1], pole[2]
+      if math.abs((left + n) - right) < 4 then
+        return Maybe.Just({ left + n, right })
+      else
+        return Maybe.Nothing()
+      end
+    end
+  end
+  local function landRight(n)
+    return function(pole)
+      local left, right = pole[1], pole[2]
+      if math.abs(left - (right + n)) < 4 then
+        return Maybe.Just({ left, right + n })
+      else
+        return Maybe.Nothing()
+      end
+    end
+  end
+
+  local routine = Maybe.runDo(function()
+    local start = perform(Maybe.Just({ 0, 0 }))
+    local first = perform(landLeft(2)(start))
+    local second = perform(landRight(2)(first))
+    return landLeft(1)(second)
+  end)
+  assert_true(Maybe.isJust(routine) and routine.value[1] == 3 and routine.value[2] == 2,
+              "do_coro walk routine Just (3,2)")
+
+  -- Nothing 短路：后续 perform 不再执行
+  local reached = false
+  local fail = Maybe.runDo(function()
+    local _ = perform(Maybe.Nothing())
+    reached = true
+    return Maybe.Just(1)
+  end)
+  assert_eq(fail, Maybe.Nothing(), "do_coro Nothing short-circuit result")
+  assert_true(not reached, "do_coro Nothing short-circuit skips rest")
+
+  local ok_out, err_out = pcall(function()
+    perform(Maybe.Just(1))
+  end)
+  assert_true(not ok_out, "do_coro perform outside runDo errors")
+  assert_true(tostring(err_out):find("perform", 1, true) ~= nil,
+              "do_coro perform outside message mentions perform")
+
+  -- Identity 烟测
+  local idv = Identity.runDo(function()
+    local a = perform(Identity.unit(10))
+    return Identity.unit(a + 1)
+  end)
+  assert_eq(Identity.runIdentity(idv), 11, "do_coro Identity.runDo")
+end
+
 
 ------------------------------------------------------------
 io.stdout:write("\n")

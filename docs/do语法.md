@@ -133,3 +133,9 @@ end
 ```
 mdo: 第 19 行: do 块最后一行须为 monadic 表达式（不能是 NAME <- EXPR）
 ```
+
+---
+
+## 相关：运行时顺序 do（`runDo` / `perform`）
+
+若不想用预处理器，可用原生 coroutine 驱动的 `do_coro.runDo` / `perform`（底层仍是 `bind`）。见 [`顺序do_coro.md`](顺序do_coro.md)。与本文的 `@mdo`、以及 Cont CPS 的 `Coro.yield` 三者请勿混淆。

@@ -84,6 +84,11 @@ local function makeWriter(monoid)
     return w
   end
 
+  -- 顺序 do（原生 coroutine）：见 do_coro.lua / docs/顺序do_coro.md
+  M.runDo = function(body)
+    return require("do_coro").runDo(M, body)
+  end
+
   return M
 end
 

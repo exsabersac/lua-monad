@@ -4,7 +4,7 @@
 
 面向教学与对照阅读：值形态、定律测试、以及 LYAH「走钢丝」示例均可在本仓库直接跑通。
 
-更细的设计说明见 [`docs/设计说明.md`](docs/设计说明.md)；API 一览见 [`docs/API.md`](docs/API.md)；do 语法见 [`docs/do语法.md`](docs/do语法.md)。
+更细的设计说明见 [`docs/设计说明.md`](docs/设计说明.md)；API 一览见 [`docs/API.md`](docs/API.md)；do 语法见 [`docs/do语法.md`](docs/do语法.md)；顺序 do（`runDo`）见 [`docs/顺序do_coro.md`](docs/顺序do_coro.md)。
 
 ## `m` 在 Lua 里是什么？
 
@@ -203,6 +203,28 @@ lua examples/do_maybe_foo.lua
 
 语法规则、限制与 API 见 [`docs/do语法.md`](docs/do语法.md)。库：`src/mdo.lua`；CLI：`tools/mdo.lua`、`tools/run_mdo.lua`。
 
+## 顺序 do（`runDo` / `perform`，原生 coroutine）
+
+在普通 `.lua` 里顺序书写，无需手写 `>>`；底层仍是 `bind`。原生 `coroutine` 仅作实现细节，**不同于** Cont CPS 的 `Coro.yield`。
+
+```lua
+local Maybe = require("maybe")
+local perform = require("do_coro").perform
+
+local foo = Maybe.runDo(function()
+  local x = perform(Maybe.Just(3))
+  local y = perform(Maybe.Just("!"))
+  return Maybe.Just(tostring(x) .. y)
+end)
+```
+
+```bash
+lua examples/do_coro_maybe_foo.lua
+lua examples/do_coro_walk_the_line.lua
+```
+
+说明与对照 `@mdo` / Cont Coro：[`docs/顺序do_coro.md`](docs/顺序do_coro.md)。库：`src/do_coro.lua`。
+
 ## Walk the line（LYAH）
 
 [`examples/walk_the_line.lua`](examples/walk_the_line.lua) 对照 *Learn You a Haskell*「A Fistful of Monads」中 Pierre 走钢丝：
@@ -238,6 +260,10 @@ lua tools/run_mdo.lua examples/do_walk_the_line.mdo
 lua tools/mdo.lua examples/do_maybe_foo.mdo
 lua examples/do_maybe_foo.lua
 
+# 顺序 do（原生 coroutine / runDo+perform）
+lua examples/do_coro_maybe_foo.lua
+lua examples/do_coro_walk_the_line.lua
+
 # Identity / Reader / Writer
 lua examples/identity_basics.lua
 lua examples/reader_config.lua
@@ -268,7 +294,8 @@ lua-monad/
   src/cont.lua
   src/coro.lua               # Cont-based CPS coro
   src/mdo.lua                # @mdo 预处理 + loadfile/dofile/loader
-  tests/run.lua              # 定律 + 糖 + coro + mdo 断言
+  src/do_coro.lua            # runDo / perform（原生 coroutine 顺序 do）
+  tests/run.lua              # 定律 + 糖 + coro + mdo + do_coro 断言
   tools/mdo.lua              # CLI：写 .lua 或 --run
   tools/run_mdo.lua          # --run 薄包装
   examples/demo.lua
@@ -280,9 +307,12 @@ lua-monad/
   examples/cont_cps_basics.lua # CPS 加法/阶乘/定界续延
   examples/coro_generator.lua  # yield 1..n + collect/run
   examples/coro_interactive.lua# yield 请求 / resume 回答
+  examples/do_coro_maybe_foo.lua      # runDo foo
+  examples/do_coro_walk_the_line.lua  # runDo walk routine
   docs/设计说明.md
   docs/API.md
   docs/do语法.md
+  docs/顺序do_coro.md         # runDo/perform 与 @mdo、Cont Coro 对照
   README.md
 ```
 
@@ -291,6 +321,7 @@ lua-monad/
 - [CPS 设计与工作原理](docs/CPS设计与原理.md) — Cont、callCC、定界续延、CPS 协程三层模型
 - [设计说明](docs/设计说明.md) — 总架构与 makeMonad
 - [do 语法](docs/do语法.md) — `@mdo` 预处理器
+- [顺序 do（runDo/perform）](docs/顺序do_coro.md) — 原生 coroutine 组织用户代码
 - [API 参考](docs/API.md)
 
 ## 许可
