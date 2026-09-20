@@ -1,0 +1,24 @@
+# Lua
+*.o
+*.so
+*.dll
+*.dylib
+luac.out
+
+# Rocks / local deps
+lua_modules/
+.luarocks/
+luarocks/
+
+# Editor / OS
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+*.code-workspace
+
+# Logs / temp
+*.log
+*.tmp
+.cache/
