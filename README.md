@@ -127,6 +127,9 @@ lua tests/run.lua
 
 # 演示
 lua examples/demo.lua
+
+# LYAH Walk the line（Maybe 走钢丝）
+lua examples/walk_the_line.lua
 ```
 
 `package.path` 已在脚本里加上 `src/?.lua`，请在**仓库根目录**执行。
@@ -144,6 +147,7 @@ lua-monad/
   src/coro.lua     # Cont-based CPS coro
   tests/run.lua
   examples/demo.lua
+  examples/walk_the_line.lua  # LYAH Maybe 示例
   README.md
 ```
 
