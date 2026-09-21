@@ -6,11 +6,15 @@
 --   · emit / listen → 兑现 fx.wait_event
 --   · spawn/destroy_entity → 取消绑定 flow（finally 经 Coro.force_stop）
 --   · start_flow / run：把本 sim 作为 opts.scheduler 交给 fx_sched
+--   · 实体绑定经 fx_flow.bind_entity（与 Unity OnDestroy 同模式）
+--   · register 写入本 sim；亦合并 fx 全局注册表（fx.register）
 --
 -- Scheduler 方法支持点调用（fx_sched 用 sim.schedule(d,cb)）与冒号调用。
 -- 不使用 Lua 原生 coroutine 做业务；Cont-only CPS。
 
 local Sched = require("fx_sched")
+local Flow = require("fx_flow")
+local Registry = require("fx_registry")
 
 local GameSim = {}
 GameSim.__index = GameSim
@@ -220,6 +224,15 @@ function GameSim:register(kind, handler, reg_opts)
   end
 end
 
+function GameSim:unregister(kind)
+  if self._kind_handlers[kind] == nil then
+    return false
+  end
+  self._kind_handlers[kind] = nil
+  self._async_kinds[kind] = nil
+  return true
+end
+
 ------------------------------------------------------------
 -- tick
 ------------------------------------------------------------
@@ -261,30 +274,37 @@ end
 ------------------------------------------------------------
 
 local function merge_handlers(self, overrides)
-  local h = {}
-  for k, v in pairs(self._kind_handlers) do
-    h[k] = v
-  end
-  if type(overrides) == "table" then
-    for k, v in pairs(overrides) do
-      if k ~= "__async_kinds" then
-        h[k] = v
-      end
+  -- 全局注册表 → sim 本地 register → 调用方覆盖
+  local base = {}
+  local async = {}
+  Registry.apply_to_handlers(base)
+  if type(base.__async_kinds) == "table" then
+    for k, v in pairs(base.__async_kinds) do
+      async[k] = v
     end
   end
-  local async = {}
+  for k, v in pairs(self._kind_handlers) do
+    base[k] = v
+  end
   for k, v in pairs(self._async_kinds) do
     if v then
       async[k] = true
     end
   end
-  if type(overrides) == "table" and type(overrides.__async_kinds) == "table" then
-    for k, v in pairs(overrides.__async_kinds) do
-      async[k] = v
+  if type(overrides) == "table" then
+    for k, v in pairs(overrides) do
+      if k ~= "__async_kinds" then
+        base[k] = v
+      end
+    end
+    if type(overrides.__async_kinds) == "table" then
+      for k, v in pairs(overrides.__async_kinds) do
+        async[k] = v
+      end
     end
   end
-  h.__async_kinds = async
-  return h, async
+  base.__async_kinds = async
+  return base, async
 end
 
 --- start_flow(entity_or_nil, ma, handlers?, opts?) → flow
@@ -300,7 +320,7 @@ function GameSim:start_flow(entity_or_nil, ma, handlers, opts)
     verbose_wait = opts.verbose_wait,
   }
 
-  local flow = Sched.start_session(ma, h, sched_opts)
+  local flow = Flow.start_flow(ma, h, sched_opts)
   self._flows[#self._flows + 1] = flow
 
   if entity_or_nil ~= nil then
@@ -308,9 +328,11 @@ function GameSim:start_flow(entity_or_nil, ma, handlers, opts)
     if type(ent) == "number" then
       ent = self._entities[ent]
     end
-    if ent and ent.flows then
-      ent.flows[#ent.flows + 1] = flow
-      flow.entity_id = ent.id
+    if ent ~= nil then
+      Flow.bind_entity(flow, ent, {
+        on_destroy = "cancel",
+        reason = "entity_destroyed",
+      })
     end
   end
 

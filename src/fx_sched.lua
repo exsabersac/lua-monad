@@ -12,8 +12,48 @@
 
 local Coro = require("coro")
 local Cont = require("cont")
+local Registry = require("fx_registry")
 
 local M = {}
+
+------------------------------------------------------------
+-- 轻量追踪（默认关闭）
+-- opts.trace = function(ev) 优先于全局 tracer
+-- ev.type: flow_start | yield | resume | fork | join | cancel | done | failed | stopped
+------------------------------------------------------------
+
+local _global_tracer = nil
+
+function M.set_tracer(fn)
+  if fn ~= nil and type(fn) ~= "function" then
+    error("fx_sched.set_tracer: expected function or nil", 2)
+  end
+  _global_tracer = fn
+end
+
+function M.get_tracer()
+  return _global_tracer
+end
+
+local function emit_trace(opts, ev)
+  local t = nil
+  if opts ~= nil then
+    t = opts.trace
+  end
+  if t == nil then
+    t = _global_tracer
+  end
+  if type(t) ~= "function" then
+    return
+  end
+  local ok, err = pcall(t, ev)
+  if not ok then
+    -- 追踪失败不影响业务；仅 stderr 提示一次形态
+    io.stderr:write("[fx.trace] tracer error: " .. tostring(err) .. "\n")
+  end
+end
+
+M._emit_trace = emit_trace  -- 测试可选用
 
 ------------------------------------------------------------
 -- 墙钟时间（并行 wait 的 deadline / sleep 必须一致）
@@ -575,6 +615,7 @@ drive_until_block = function(nursery, task)
     ------------------------------------------------------------
     if req.kind == "wait" then
       local secs = req.seconds or 0
+      emit_trace(opts, { type = "yield", task_id = task.id, kind = "wait", seconds = secs })
       local scheduler = opts.scheduler
       -- 外部 Scheduler：登记 timer，不 busy_wait；回调里 resume + pump
       if scheduler ~= nil then
@@ -624,6 +665,7 @@ drive_until_block = function(nursery, task)
     -- when_all / when_any（同 nursery 结构化并行）
     ------------------------------------------------------------
     elseif req.kind == "when_all" or req.kind == "when_any" then
+      emit_trace(opts, { type = "yield", task_id = task.id, kind = req.kind })
       local mode = (req.kind == "when_any") and "any" or "all"
       local st = start_group(nursery, task, req, mode)
       if st == "failed" then
@@ -652,6 +694,11 @@ drive_until_block = function(nursery, task)
       local child = alloc_task(nursery, ma)
       child.parent_id = task.id -- 取消传播树：记录 fork 父
       local handle = { id = child.id }
+      emit_trace(opts, {
+        type = "fork",
+        task_id = task.id,
+        child_id = child.id,
+      })
       task.answer = Coro.resume(task.answer, handle)
       -- 不 return：父任务继续；子任务留给主循环驱动
 
@@ -664,6 +711,11 @@ drive_until_block = function(nursery, task)
         "fx_sched: join requires handle {id=number}")
       local child = nursery.tasks[h.id]
       assert(child, "fx_sched: join unknown handle id=" .. tostring(h.id))
+      emit_trace(opts, {
+        type = "join",
+        task_id = task.id,
+        target_id = h.id,
+      })
       local want_cancel = not not req.cancel_siblings
       if child.finished then
         if Coro.isDone(child.answer) then
@@ -758,6 +810,12 @@ drive_until_block = function(nursery, task)
     -- wait_event：事件总线 listen；无总线则走 handlers.wait_event
     ------------------------------------------------------------
     elseif req.kind == "wait_event" then
+      emit_trace(opts, {
+        type = "yield",
+        task_id = task.id,
+        kind = "wait_event",
+        name = req.name,
+      })
       local scheduler = opts.scheduler
       local listen = opts.listen
       if listen == nil and scheduler then
@@ -798,8 +856,23 @@ drive_until_block = function(nursery, task)
         return "wait"
       else
         local handler = handlers.wait_event
-        assert(handler, "fx_sched: no handler for kind=wait_event (and no listen)")
+        if handler == nil then
+          local err = Registry.unknown_error("wait_event")
+          emit_trace(opts, {
+            type = "failed",
+            task_id = task.id,
+            error = err,
+            kind = "wait_event",
+          })
+          task.answer = Coro.Failed(err)
+          return "failed"
+        end
         local next_input = handler(req)
+        emit_trace(opts, {
+          type = "resume",
+          task_id = task.id,
+          kind = "wait_event",
+        })
         task.answer = Coro.resume(task.answer, next_input)
       end
 
@@ -809,13 +882,42 @@ drive_until_block = function(nursery, task)
     ------------------------------------------------------------
     else
       local handler = handlers[req.kind]
-      assert(handler, "fx_sched: no handler for kind=" .. tostring(req.kind))
+      if handler == nil then
+        -- 再查全局注册表（handlers 合并遗漏时兜底）
+        local ent = Registry.get(req.kind)
+        if ent then
+          handler = ent.handler
+          local async_kinds = opts.async_kinds or handlers.__async_kinds or {}
+          if ent.async then
+            async_kinds = async_kinds or {}
+            async_kinds[req.kind] = true
+            opts.async_kinds = async_kinds
+          end
+        end
+      end
+      if handler == nil then
+        local err = Registry.unknown_error(req.kind)
+        emit_trace(opts, {
+          type = "failed",
+          task_id = task.id,
+          error = err,
+          kind = req.kind,
+        })
+        task.answer = Coro.Failed(err)
+        return "failed"
+      end
+      emit_trace(opts, {
+        type = "yield",
+        task_id = task.id,
+        kind = req.kind,
+      })
       local async_kinds = opts.async_kinds or handlers.__async_kinds
       local is_async = async_kinds and async_kinds[req.kind]
       if is_async then
         local flag = { cancelled = false }
         task._timer_flag = flag -- 复用取消旗标（无 timer 时仅作 cancelled）
         task.waiting = true
+        local kind_snapshot = req.kind
         handler(req, function(next_input)
           if flag.cancelled then
             return
@@ -825,6 +927,11 @@ drive_until_block = function(nursery, task)
           end
           task.waiting = false
           task._timer_flag = nil
+          emit_trace(opts, {
+            type = "resume",
+            task_id = task.id,
+            kind = kind_snapshot,
+          })
           task.answer = Coro.resume(task.answer, next_input)
           if type(opts._pump) == "function" then
             opts._pump()
@@ -833,6 +940,11 @@ drive_until_block = function(nursery, task)
         return "wait"
       else
         local next_input = handler(req)
+        emit_trace(opts, {
+          type = "resume",
+          task_id = task.id,
+          kind = req.kind,
+        })
         task.answer = Coro.resume(task.answer, next_input)
       end
     end
@@ -881,6 +993,11 @@ function M.start_session(ma, handlers, opts)
     root = root,
   }
 
+  emit_trace(opts, {
+    type = "flow_start",
+    root_id = root.id,
+  })
+
   local function result_of_root()
     local a = root.answer
     if Coro.isDone(a) then
@@ -904,6 +1021,14 @@ function M.start_session(ma, handlers, opts)
   local function settle_done()
     flow.done = true
     flow.result = result_of_root()
+    local r = flow.result
+    if r.ok then
+      emit_trace(opts, { type = "done", root_id = root.id, value = r.value })
+    elseif r.stopped then
+      emit_trace(opts, { type = "stopped", root_id = root.id, reason = r.reason })
+    elseif r.failed then
+      emit_trace(opts, { type = "failed", root_id = root.id, error = r.error })
+    end
     return flow.result
   end
 
@@ -947,6 +1072,7 @@ function M.start_session(ma, handlers, opts)
 
     while not flow.done do
       if is_cancelled(opts.cancel) then
+        emit_trace(opts, { type = "cancel", root_id = root.id, reason = "cancelled" })
         cancel_all_unfinished(nursery, "cancelled")
         if not root.finished then
           root.answer = force_stop_task_answer(root.answer, "cancelled")
@@ -955,6 +1081,7 @@ function M.start_session(ma, handlers, opts)
         end
         flow.done = true
         flow.result = { ok = false, stopped = true, reason = "cancelled" }
+        emit_trace(opts, { type = "stopped", root_id = root.id, reason = "cancelled" })
         pumping = false
         return flow.result
       end
@@ -1066,6 +1193,7 @@ function M.start_session(ma, handlers, opts)
     if flow.done then
       return flow.result
     end
+    emit_trace(opts, { type = "cancel", root_id = root.id, reason = reason })
     cancel_all_unfinished(nursery, reason)
     if not root.finished then
       root.answer = force_stop_task_answer(root.answer, reason)
@@ -1074,6 +1202,7 @@ function M.start_session(ma, handlers, opts)
     end
     flow.done = true
     flow.result = { ok = false, stopped = true, reason = reason }
+    emit_trace(opts, { type = "stopped", root_id = root.id, reason = reason })
     return flow.result
   end
 

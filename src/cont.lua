@@ -223,4 +223,31 @@ function M.init_finally(ma, init, cleanup)
   return ce.init_finally(ma, init, cleanup)
 end
 
+--- bracket(acquire, use, release) — 资源作用域（同 fx.with_resource）
+-- acquire() → resource | Cont；use(r) → Cont；release(r, outcome) → Cont|value
+-- Done / Stopped / Failed / Cont.throw 路径均会 release（经 Cont.finally）
+function M.bracket(acquire, use, release)
+  assert(type(acquire) == "function", "Cont.bracket: acquire must be function")
+  assert(type(use) == "function", "Cont.bracket: use must be function")
+  assert(type(release) == "function", "Cont.bracket: release must be function")
+  -- 确保 Cont.is / finally 已挂载
+  if not M.is then
+    require("cont_env")
+  end
+  local cont_mt = getmetatable(M.unit(nil))
+  local function ensure_cont(x)
+    if type(x) == "table" and getmetatable(x) == cont_mt then
+      return x
+    end
+    return M.unit(x)
+  end
+  return ensure_cont(acquire()) >> function(resource)
+    local body = use(resource)
+    assert(body ~= nil, "Cont.bracket: use(resource) must return Cont")
+    return M.finally(body, function(outcome)
+      return ensure_cont(release(resource, outcome))
+    end)
+  end
+end
+
 return M

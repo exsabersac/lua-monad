@@ -1864,6 +1864,160 @@ end
 
 
 ------------------------------------------------------------
+-- 工程能力：注册表 / 未知 kind Failed / with_resource / trace / bind_entity
+------------------------------------------------------------
+do
+  local fx = require("fx")
+  local Cont = require("cont")
+  local Coro = require("coro")
+  local GameSim = require("game_sim")
+  local Registry = require("fx_registry")
+  local Flow = require("fx_flow")
+
+  -- 清理全局注册，避免污染其它用例
+  Registry.clear()
+  fx.set_tracer(nil)
+
+  -- register / unregister
+  fx.register("ping", function(req)
+    return { pong = req.n or 0 }
+  end)
+  assert_true(Registry.has("ping"), "registry has ping")
+  local r = fx.run(Coro.yield({ kind = "ping", n = 3 }) >> function(v)
+    return Cont.unit(v)
+  end, { wait = function() return true end })
+  assert_true(r.ok and r.value.pong == 3, "fx.register handler used")
+  assert_true(fx.unregister("ping"), "unregister ping")
+  assert_true(not Registry.has("ping"), "ping gone")
+
+  -- 未知 kind → Failed（非静默、非 Lua assert 崩）
+  local unk = fx.run(Coro.yield({ kind = "no_such_effect_xyz" }) >> function(v)
+    return Cont.unit(v)
+  end, { wait = function() return true end })
+  assert_true(unk.failed, "unknown kind failed")
+  assert_true(type(unk.error) == "table" and unk.error.tag == "unknown_effect",
+    "unknown kind structured error")
+  assert_eq(unk.error.effect_kind, "no_such_effect_xyz", "unknown effect_kind")
+
+  -- STANDARD_KINDS 文档键存在
+  assert_true(Registry.STANDARD_KINDS.wait ~= nil, "STANDARD_KINDS.wait")
+  assert_true(Registry.STANDARD_KINDS.wait_event ~= nil, "STANDARD_KINDS.wait_event")
+  assert_true(Registry.STANDARD_KINDS.anim ~= nil, "STANDARD_KINDS.anim")
+
+  -- with_resource：Done 路径 release
+  local released = {}
+  local body = fx.with_resource(
+    function() return { id = "R1" } end,
+    function(res)
+      return Cont.unit(res.id .. ":used")
+    end,
+    function(res, outcome)
+      released[#released + 1] = { id = res.id, status = outcome.status }
+      return true
+    end
+  )
+  r = fx.run(body, { wait = function() return true end })
+  assert_true(r.ok and r.value == "R1:used", "with_resource done value")
+  assert_eq(#released, 1, "with_resource release once")
+  assert_eq(released[1].status, "done", "with_resource release on done")
+
+  -- with_resource：Failed 路径仍 release
+  released = {}
+  body = fx.with_resource(
+    function() return { id = "R2" } end,
+    function(_res)
+      return fx.fail("boom")
+    end,
+    function(res, outcome)
+      released[#released + 1] = { id = res.id, status = outcome.status, err = outcome.error }
+      return true
+    end
+  )
+  r = fx.run(body, { wait = function() return true end })
+  assert_true(r.failed and r.error == "boom", "with_resource fail propagates")
+  assert_eq(#released, 1, "with_resource release on fail")
+  assert_eq(released[1].status, "failed", "release status failed")
+
+  -- with_resource：Stopped（cancel）仍 release
+  released = {}
+  local token = { cancelled = false }
+  body = fx.with_resource(
+    function() return { id = "R3" } end,
+    function(_res)
+      return fx.wait(0.05) >> function(_)
+        return Cont.unit("late")
+      end
+    end,
+    function(res, outcome)
+      released[#released + 1] = { id = res.id, status = outcome.status, reason = outcome.reason }
+      return true
+    end
+  )
+  -- 用瞬时 wait handler，但 cancel 在第一次 pump 前触发较难；改用 GameSim cancel
+  local sim = GameSim.new({ dt = 0.05 })
+  local flow = sim:start_flow(nil, body)
+  assert_true(not flow.done, "resource wait pending")
+  flow.cancel("user_cancel")
+  assert_true(flow.done and flow.result.stopped, "resource cancelled")
+  assert_eq(#released, 1, "with_resource release on stop")
+  assert_eq(released[1].status, "stopped", "release status stopped")
+
+  -- Cont.bracket 别名
+  released = {}
+  r = fx.run(Cont.bracket(
+    function() return 1 end,
+    function(n) return Cont.unit(n + 1) end,
+    function(_n, outcome)
+      released[#released + 1] = outcome.status
+      return true
+    end
+  ), { wait = function() return true end })
+  assert_true(r.ok and r.value == 2 and released[1] == "done", "Cont.bracket works")
+
+  -- 轻量追踪
+  local events = {}
+  fx.set_tracer(function(ev)
+    events[#events + 1] = ev.type
+  end)
+  r = fx.run(
+    fx.wait(0.001) >> function(_) return Cont.unit(9) end,
+    { wait = function() return true end }
+  )
+  fx.set_tracer(nil)
+  assert_true(r.ok and r.value == 9, "trace run ok")
+  local joined = table.concat(events, ",")
+  assert_true(joined:find("flow_start", 1, true), "trace flow_start")
+  assert_true(joined:find("yield", 1, true), "trace yield")
+  assert_true(joined:find("done", 1, true), "trace done")
+
+  -- opts.trace 覆盖全局
+  events = {}
+  r = fx.run(Cont.unit(1), { wait = function() return true end }, {
+    trace = function(ev) events[#events + 1] = ev.type end,
+  })
+  assert_true(r.ok, "opts.trace run")
+  assert_true(#events >= 2, "opts.trace events")
+
+  -- bind_entity
+  sim = GameSim.new({ dt = 0.05 })
+  local ent = sim:spawn_entity("mob")
+  flow = Flow.start_flow(
+    fx.wait(5) >> function(_) return Cont.unit(1) end,
+    nil,
+    { scheduler = sim }
+  )
+  local binding = fx.bind_entity(flow, ent, { on_destroy = "cancel" })
+  assert_eq(#ent.flows, 1, "bind appends flows")
+  sim:tick(0.05)
+  binding.destroy("entity_destroyed")
+  assert_true(flow.done and flow.result.stopped, "bind_entity destroy cancels")
+
+  Registry.clear()
+  fx.set_tracer(nil)
+end
+
+
+------------------------------------------------------------
 -- 地牢突袭 demo：校验 Cont/fx/GameSim 综合栈
 ------------------------------------------------------------
 do

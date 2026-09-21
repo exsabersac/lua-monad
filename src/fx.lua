@@ -13,17 +13,27 @@
 --   9. 这不是真实网络/UI；默认 handlers 只是 mock，便于演示与测试。
 --  10. opts.scheduler / opts.game：外部游戏时间后端；wait 走 schedule，不 busy_wait。
 --  11. fx.wait_event：由 GameSim.emit / listen 兑现。
+--  12. fx.register / unregister：全局效果注册表（见 fx_registry）；未知 kind → Failed。
+--  13. fx.with_resource / Cont.bracket：资源获取-使用-释放（Done/Stopped/Failed 皆 release）。
+--  14. opts.trace / fx.set_tracer：轻量 flow 追踪（默认关闭）。
+--  15. fx.bind_entity / fx_flow：实体销毁绑定 cancel。
 --
 -- 重要区分：
 --   Cont 上的 Coro.yield ≠ Lua 原生 coroutine.yield。
 --   Coro 用 Cont 编码答案类型 Done | Yielded | Stopped | Failed；业务 API 请走本模块 / Coro，
 --   不要当原生协程 perform/runDo 用（本库主线已放弃 native perform/runDo）。
 --
--- 依赖：cont.lua、coro.lua、fx_sched.lua
+-- 依赖：cont.lua、coro.lua、fx_sched.lua、fx_registry.lua、fx_flow.lua
+--
+-- 标准 kind 一览（详见 fx_registry.STANDARD_KINDS）：
+--   内建：wait, wait_event, when_all, when_any, fork, join, join_handles, with_timeout
+--   演示：anim（需 register）；遗留 mock：connect, click
 
 local Cont = require("cont")
 local Coro = require("coro")
 local Sched = require("fx_sched")
+local Registry = require("fx_registry")
+local Flow = require("fx_flow")
 
 local fx = {}
 
@@ -270,6 +280,61 @@ function fx.with_timeout(ma, seconds, opts)
 end
 
 ------------------------------------------------------------
+-- 效果注册表（全局）
+------------------------------------------------------------
+
+--- register(kind, handler, opts?) — 见 fx_registry
+function fx.register(kind, handler, opts)
+  return Registry.register(kind, handler, opts)
+end
+
+function fx.unregister(kind)
+  return Registry.unregister(kind)
+end
+
+fx.registry = Registry
+
+------------------------------------------------------------
+-- 资源 bracket（Done / Stopped / Failed 皆 release）
+------------------------------------------------------------
+
+--- with_resource(acquire, use, release) → Cont Answer
+-- acquire() → resource | Cont resource
+-- use(resource) → Cont Answer a
+-- release(resource, outcome) → Cont|value；outcome={status,value?,error?,reason?}
+-- 基于 Cont.finally：正常 Done、stop、fail、cancel 均会 release。
+function fx.with_resource(acquire, use, release)
+  return Cont.bracket(acquire, use, release)
+end
+
+-- 与 Cont.bracket / Haskell bracket 对照
+fx.bracket = fx.with_resource
+
+------------------------------------------------------------
+-- 轻量追踪（默认关闭）
+------------------------------------------------------------
+
+--- set_tracer(fn|nil)；fn(ev) 收到 {type=..., ...}
+function fx.set_tracer(fn)
+  return Sched.set_tracer(fn)
+end
+
+function fx.get_tracer()
+  return Sched.get_tracer()
+end
+
+------------------------------------------------------------
+-- 实体绑定
+------------------------------------------------------------
+
+--- bind_entity(flow, entity, opts?) — 见 fx_flow
+function fx.bind_entity(flow, entity, opts)
+  return Flow.bind_entity(flow, entity, opts)
+end
+
+fx.flow = Flow
+
+------------------------------------------------------------
 -- 默认 mock handlers（可被 fx.run 的 handlers? 覆盖）
 ------------------------------------------------------------
 
@@ -307,16 +372,8 @@ local default_handlers = {
 }
 
 local function merge_handlers(overrides)
-  local h = {}
-  for k, v in pairs(default_handlers) do
-    h[k] = v
-  end
-  if type(overrides) == "table" then
-    for k, v in pairs(overrides) do
-      h[k] = v
-    end
-  end
-  return h
+  -- default → 全局注册表 → 调用方覆盖
+  return Registry.merge_handlers(default_handlers, overrides)
 end
 
 ------------------------------------------------------------
@@ -364,6 +421,7 @@ function fx.run_parallel(tasks, handlers, opts)
     listen = opts.listen,
     unlisten = opts.unlisten,
     async_kinds = opts.async_kinds or h.__async_kinds,
+    trace = opts.trace,
   }
   return Sched.run_parallel(tasks, h, sched_opts, mode)
 end
@@ -415,6 +473,7 @@ function fx.run(ma, handlers, opts)
     listen = opts.listen,
     unlisten = opts.unlisten,
     async_kinds = opts.async_kinds or h.__async_kinds,
+    trace = opts.trace,
   })
 end
 

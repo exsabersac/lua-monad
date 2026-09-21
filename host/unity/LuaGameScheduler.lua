@@ -12,6 +12,13 @@
 -- 用法：
 --   local LuaGameScheduler = require("LuaGameScheduler")
 --   local sched = LuaGameScheduler.adapt(host)
+--
+-- 与 0.2.0-eng 工程 API 配合（本文件只做时间后端；下列由业务 / GameSim 层调用）：
+--   fx.register / fx.unregister     — 全局效果注册；未知 kind → Failed
+--   fx.bind_entity(flow, entity)  — 实体 OnDestroy 时 cancel（见 fx_flow）
+--   fx.with_resource / Cont.bracket — 资源获取-使用-释放
+--   opts.trace / fx.set_tracer      — 轻量追踪（默认关）
+--   GameSim:start_flow(entity, ma)  — 参考宿主；Unity 侧同样 pattern
 
 local M = {}
 
