@@ -6,35 +6,37 @@
 
 ## 快速示例
 
+初学者可直接写普通 `a → b`；组合层会把非 Cont 返回值自动 `Cont.unit` 提升。已返回 Cont 的步进（`Cont.unit`、`fx.wait`、`>>` 链等）原样使用：
+
 ```lua
 package.path = "src/?.lua;" .. package.path
 local Cont = require("cont")
 
 local pipe = Cont.withEnv(function(_ENV)
   function add1(x)
-    return Cont.unit(x + 1)
+    return x + 1          -- 普通值 → 自动 Cont.unit
   end
   function times2(x)
-    return Cont.unit(x * 2)
+    return Cont.unit(x * 2)  -- 已是 Cont → 不重复包
   end
 end)
 
 assert(Cont.evalCont(pipe(3)) == 8)  -- (3+1)*2
 ```
 
-可执行示例：[`examples/cont_env_pipe.lua`](../examples/cont_env_pipe.lua)。
+可执行示例：[`examples/cont_env_pipe.lua`](../examples/cont_env_pipe.lua)、[`examples/cont_env_plain_steps.lua`](../examples/cont_env_plain_steps.lua)。
 
 ## 语义
 
 | 规则 | 说明 |
 |------|------|
-| 默认收集 | env 上每次**函数**写入都记为步骤；无 ContPipe / 无标志位 |
+| 默认收集 | env 上每次**函数**写入都记为步骤；无 ContPipe / 无标志位；普通 `a→b` 自动提升为 `a→Cont` |
 | 顺序 | 默认按**首次出现**名顺序；可用 `__AfterStep__` / `__BeforeStep__` 拓扑重排（见下） |
 | 同名再定义 | **原地替换**该名对应步骤，不改变相对次序 |
 | 非函数赋值 | 普通字段，**不进**管道（数字/表等辅助数据 ok） |
 | 助手函数 | 步内 `local function`；或 `__Helper__()` / `__NotStep__()` 后再赋函数（存 env 不进管道）；未标注则挂到 env 的函数一律当步骤 |
-| `init` / `__Init__` | 固定名 `init`/`__init__`，或 `__Init__()` 标注：非步骤；管道前按定义序执行，`init(x) → Cont`（可改写输入） |
-| `finally` / `__Finally__` | 固定名 `finally`/`__final__`，或 `__Finally__()` 标注：非步骤；会话退出时按定义序清理（见下） |
+| `init` / `__Init__` | 固定名 `init`/`__init__`，或 `__Init__()` 标注：非步骤；管道前按定义序执行；`init(x) → Cont\|value`（普通值经 `Cont.unit`，可改写输入） |
+| `finally` / `__Finally__` | 固定名 `finally`/`__final__`，或 `__Finally__()` 标注：非步骤；会话退出时按定义序清理；返回值亦可为普通值（`nil`→`Cont.unit(true)`，见下） |
 | 零步骤 | 返回恒等管道，等价于 `Cont.unit`；若仅有 init/finally 仍包生命周期 |
 | 返回值 | `composed(x) → Cont`；另在 env 上 `rawset` `pipe` / `compose` 指向同一函数（body 返回后可读） |
 
@@ -44,11 +46,39 @@ assert(Cont.evalCont(pipe(3)) == 8)  -- (3+1)*2
 composed(x) = Cont.unit(x) >> step1 >> step2 >> ... >> stepN
 ```
 
+## 普通函数自动提升
+
+注册**管道步骤**时（属性折完之前先 lift，使 `__Before__` / `__After__` / `__Trace__` 等看到 Cont 步进）：
+
+```lua
+local cont_mt = getmetatable(Cont.unit(nil))
+local function is_cont(x)
+  return type(x) == "table" and getmetatable(x) == cont_mt
+end
+
+local function lift_step(step)
+  return function(a)
+    local r = step(a)
+    if is_cont(r) then return r end
+    return Cont.unit(r)
+  end
+end
+```
+
+| 返回值 | 行为 |
+|--------|------|
+| Cont 代理（`getmetatable(x) == Cont` 的 mt，可用 `Cont.is` / `Cont.isCont`） | **原样**参与 `>>` |
+| 其它（数字、表、字符串、`nil` 等） | `Cont.unit(r)` |
+
+**不**对 helper / `init` / `finally` 做步骤式 lift；但 `init`/`finally` 的返回值在生命周期里仍经 `ensure_cont`：普通值 → `Cont.unit`，`nil`（finally）→ `Cont.unit(true)`，与步骤提升一致、便于「忽略清理返回值」。
+
+混写示例见 [`examples/cont_env_plain_steps.lua`](../examples/cont_env_plain_steps.lua)。
+
 ## 与 `@mdo`、与已放弃的 native `runDo` 对比
 
 | 方案 | 形态 | 范围 | 说明 |
 |------|------|------|------|
-| **`Cont.withEnv`** | 运行时 env + `__newindex` | **仅 Cont** | 步骤是 `a → Cont r b`，默认自动 `>>`；适合 CPS 管道拼装 |
+| **`Cont.withEnv`** | 运行时 env + `__newindex` | **仅 Cont** | 步骤是 `a → Cont r b`（亦可写普通 `a→b`，自动提升），默认自动 `>>`；适合 CPS 管道拼装 |
 | **`@mdo` … `@end`** | 源码预处理 | **任意** 带 `>>`/`..` 的 monad | 类 Haskell `<-` 绑定；生成嵌套 `function`；见 [do语法.md](./do语法.md) |
 | **native `runDo` / `perform`（已放弃）** | Lua 协程在 do 块里 `perform` | 曾设想通用 | 依赖 `coroutine`，与本库「Cont 教学 CPS」主线不一致；本分支**不包含** |
 
@@ -67,6 +97,7 @@ cont_env.with_finally(ma, cleanup) → Cont
 Cont.finally(ma, cleanup)          -- 同实现
 cont_env.init_finally(ma, init?, cleanup?) → Cont
 Cont.init_finally(...)             -- 同实现
+Cont.is(x) / Cont.isCont(x) → bool -- Cont 代理表判定（加载 cont_env 后可用）
 ```
 
 - `body(env)`：用户把步骤写到 `env`（参数名常取 `_ENV`，以便 `function name` 语法写入 env）。
@@ -87,6 +118,7 @@ Cont.init_finally(...)             -- 同实现
 | [`examples/cont_env_coro_mix.lua`](../examples/cont_env_coro_mix.lua) | 中间步 `Coro.yield("need-input") >> …`；用 `Coro.start`/`resume` 或 `Coro.run` 驱动。**注意**：`Coro.yield` ≠ Lua 原生 `coroutine`；`withEnv` 只组织 `>>` |
 | [`examples/cont_env_data_driven.lua`](../examples/cont_env_data_driven.lua) | env 上非函数字段（`threshold` / `label`）不进管道；步骤闭包读 `env.threshold` 做 clamp + tag |
 | [`examples/cont_env_fact_pipeline.lua`](../examples/cont_env_fact_pipeline.lua) | 较长 CPS 链（normalize → square → sum）与阶乘步骤；以及对整段结果 `mapCont` |
+| [`examples/cont_env_plain_steps.lua`](../examples/cont_env_plain_steps.lua) | **普通 `a→b` 自动提升**；与 `Cont.unit` / `fx.wait` 混写；`__Trace__` 作用在 plain 步 |
 
 配置字段写法提示（两种均可；**勿**在参数名不是 `_ENV` 时写 `function clamp`——那会落到 chunk 全局、管道为空）：
 
@@ -179,9 +211,9 @@ end)
 
 ```text
 composed(x) =
-  inits（定义序，每步 init(v) → Cont，可改写 v）
-  >> steps（>> 链）
-  — 退出时 → cleanups（定义序，finally(outcome) → Cont）
+  inits（定义序，每步 init(v) → Cont|value，可改写 v）
+  >> steps（>> 链；步骤亦可为普通 a→b）
+  — 退出时 → cleanups（定义序，finally(outcome) → Cont|value）
 ```
 
 `outcome` 形状：

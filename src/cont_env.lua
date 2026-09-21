@@ -10,18 +10,56 @@
 --
 -- 规则摘要：
 --   1. 函数赋值 → 管道步骤；同名再赋 → 原地替换（保留首次出现次序）；可用 AfterStep/BeforeStep 拓扑重排。
---   2. 非函数赋值 → 普通字段，不进管道（常量/表 ok）。
---   3. 助手：步内 local；或 `__Helper__()` / `__NotStep__()` 标注后再赋函数（存 env 但不进 >>）。
---   4. 固定名 `init` / `__init__` 与属性 `__Init__`：非步骤；在管道前按定义序跑一遍（可改写输入）。
---   5. 固定名 `finally` / `__final__` 与属性 `__Finally__`：非步骤；在管道/协程会话退出时跑清理。
---   6. 零步骤时 composed ≡ Cont.unit（恒等管道）；若仅有 init/finally 仍包一层生命周期。
---   7. 返回值为主；env.pipe / env.compose 指向同一 composed 便于自省。
---   8. body 返回后会对步骤表做快照；之后再改 env 不影响已返回的 composed。
---   9. 属性（`__Name__()`）排队，作用于**紧随其后**的那个函数赋值（PLoop 风格）。
+--   2. 步骤可为普通 `a → b`：注册时自动 lift（非 Cont 返回值包 Cont.unit）；已是 Cont（mt 判定）则原样。
+--   3. 非函数赋值 → 普通字段，不进管道（常量/表 ok）。
+--   4. 助手：步内 local；或 `__Helper__()` / `__NotStep__()` 标注后再赋函数（存 env 但不进 >>；不 lift）。
+--   5. 固定名 `init` / `__init__` 与属性 `__Init__`：非步骤；在管道前按定义序跑一遍（可改写输入；普通返回值亦经 Cont.unit）。
+--   6. 固定名 `finally` / `__final__` 与属性 `__Finally__`：非步骤；在管道/协程会话退出时跑清理（忽略值时可返回 true 等普通值）。
+--   7. 零步骤时 composed ≡ Cont.unit（恒等管道）；若仅有 init/finally 仍包一层生命周期。
+--   8. 返回值为主；env.pipe / env.compose 指向同一 composed 便于自省。
+--   9. body 返回后会对步骤表做快照；之后再改 env 不影响已返回的 composed。
+--  10. 属性（`__Name__()`）排队，作用于**紧随其后**的那个函数赋值（PLoop 风格）；lift 在属性包装之前，故属性看到的是 Cont 步进。
 
 local Cont = require("cont")
 
 local cont_env = {}
+
+------------------------------------------------------------
+-- Cont 值判定与普通步进自动提升
+------------------------------------------------------------
+-- makeMonad 产出的 Cont 是带共享 mt 的代理表（通常有 _fn）。
+local cont_mt = getmetatable(Cont.unit(nil))
+
+local function is_cont(x)
+  return type(x) == "table" and getmetatable(x) == cont_mt
+end
+
+--- Cont.is / Cont.isCont：对外识别 Cont 值（与 withEnv 提升规则一致）
+function Cont.is(x)
+  return is_cont(x)
+end
+Cont.isCont = Cont.is
+
+--- 把 a→b 或 a→Cont 统一成 a→Cont；已是 Cont 则原样返回
+local function lift_step(step)
+  return function(a)
+    local r = step(a)
+    if is_cont(r) then
+      return r
+    end
+    return Cont.unit(r)
+  end
+end
+
+--- pending 是否把下一函数标成非管道步骤（helper / init / finally）
+local function pending_marks_non_step(pending)
+  for _, item in ipairs(pending) do
+    if item.kind == "helper" or item.kind == "finally" or item.kind == "init" then
+      return true
+    end
+  end
+  return false
+end
 
 local DEFAULT_UNTIL_MAX = 1000
 
@@ -229,11 +267,11 @@ local function ensure_cont(x)
   if x == nil then
     return Cont.unit(true)
   end
-  if type(x) == "table" and x._fn ~= nil then
-    -- Cont 代理（makeMonad 函数形）
+  if is_cont(x) then
     return x
   end
   if type(x) == "function" then
+    -- 裸 CPS 函数（少见）→ wrap；与步骤 lift 不同，init/finally 仍兼容
     return Cont.wrap(x)
   end
   return Cont.unit(x)
@@ -695,10 +733,11 @@ end
 
 --- withEnv(body) → composed
 -- body(env)：在 env 上用 `function name(...) ... end` 或 `env.name = fn` 定义步骤。
+-- 步骤可为普通 a→b（自动 Cont.unit 提升）或 a→Cont（mt 判定，原样）。
 -- 可用 `__Helper__()` / `__Wrap__` / `__Before__` / `__After__` / `__Until__` / `__Timeout__` /
 -- `__Retry__` / `__Require__` / `__Trace__` / `__Catch__` / `__AfterStep__` / `__BeforeStep__` /
 -- `__Init__` / `__Finally__` 标注下一函数。
--- 固定名 `init`/`__init__`、`finally`/`__final__` 亦为非步骤生命周期钩子。
+-- 固定名 `init`/`__init__`、`finally`/`__final__` 亦为非步骤生命周期钩子（返回值亦可为普通值）。
 -- 返回 composed：a → Cont r z；顺序为 inits → steps →（退出时）cleanups。
 function cont_env.withEnv(body)
   assert(type(body) == "function", "withEnv: body must be a function")
@@ -729,6 +768,16 @@ function cont_env.withEnv(body)
       if type(value) == "function" then
         local is_helper, is_finally, is_init = false, false, false
         local after_list, before_list = {}, {}
+
+        -- 管道步骤：先 lift，再折属性，使 __Before__/__Trace__ 等看到 Cont 步进。
+        -- helper / init / finally 不按步骤 lift（init/finally 返回值由 ensure_cont 处理）。
+        local non_step = INIT_NAMES[key]
+          or FINALLY_NAMES[key]
+          or pending_marks_non_step(pending)
+        if not non_step then
+          value = lift_step(value)
+        end
+
         if #pending > 0 then
           value, is_helper, is_finally, is_init, after_list, before_list =
             apply_pending(pending, value)

@@ -678,6 +678,66 @@ do
 end
 
 ------------------------------------------------------------
+-- Cont.withEnv 普通 a→b 自动提升（lift_step）
+------------------------------------------------------------
+do
+  local cont_env = require("cont_env")
+  local fx = require("fx")
+
+  assert_true(Cont.is(Cont.unit(1)), "Cont.is Cont.unit")
+  assert_true(not Cont.is(1), "Cont.is number false")
+  assert_true(Cont.isCont == Cont.is, "Cont.isCont alias")
+
+  -- 纯普通步进
+  local plain = Cont.withEnv(function(_ENV)
+    function add1(x) return x + 1 end
+    function times2(x) return x * 2 end
+  end)
+  assert_eq(Cont.evalCont(plain(3)), 8, "plain steps (3+1)*2")
+
+  -- Cont 步进仍可用
+  local cont_only = Cont.withEnv(function(_ENV)
+    function add1(x) return Cont.unit(x + 1) end
+    function times2(x) return Cont.unit(x * 2) end
+  end)
+  assert_eq(Cont.evalCont(cont_only(3)), 8, "Cont steps still work")
+
+  -- 混写：plain + Cont.unit + fx.wait
+  local mixed = Cont.withEnv(function(_ENV)
+    function bump(x) return x + 10 end
+    function pause(x)
+      return fx.wait(0.01) >> function(_)
+        return Cont.unit(x)
+      end
+    end
+    function tag(x) return Cont.unit({ n = x }) end
+  end)
+  local r = fx.run(mixed(5))
+  assert_true(r.ok and r.value.n == 15, "mixed plain+fx.wait+Cont")
+
+  -- 属性作用在 plain 步进上（lift 在属性前）
+  local traced = Cont.withEnv(function(_ENV)
+    __Trace__("plain")
+    function add3(x) return x + 3 end
+  end)
+  assert_eq(Cont.evalCont(traced(1)), 4, "attr Trace on plain step")
+
+  local before_plain = Cont.withEnv(function(_ENV)
+    __Before__(function(x) return Cont.unit(x + 1) end)
+    function times10(x) return x * 10 end
+  end)
+  assert_eq(Cont.evalCont(before_plain(2)), 30, "attr Before on plain step")
+
+  -- init / finally 普通返回值
+  local life = Cont.withEnv(function(_ENV)
+    function init(x) return x + 1 end
+    function step(x) return x * 2 end
+    function finally(_outcome) return true end
+  end)
+  assert_eq(Cont.evalCont(life(3)), 8, "plain init/step/finally")
+end
+
+------------------------------------------------------------
 -- Cont.withEnv 属性：Helper / Until / Before+After / 多属性 / 错误路径
 ------------------------------------------------------------
 do
