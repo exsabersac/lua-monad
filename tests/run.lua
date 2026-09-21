@@ -2898,6 +2898,101 @@ end
 
 
 ------------------------------------------------------------
+-- fx.wait_real（opt-in 墙钟；默认 Failed）
+------------------------------------------------------------
+do
+  io.stdout:write("fx.wait_real… ")
+  local fx = require("fx")
+  local Cont = require("cont")
+  local Registry = require("fx_registry")
+  local Scheduler = require("scheduler")
+
+  assert_true(Registry.STANDARD_KINDS.wait_real ~= nil, "STANDARD_KINDS.wait_real")
+
+  -- 默认：无 schedule_real、无 allow_real_time → Failed 清晰
+  local r = fx.run(fx.wait_real(0.01) >> function(_)
+    return Cont.unit("should-not")
+  end)
+  assert_true(r.failed, "wait_real default failed")
+  assert_true(type(r.error) == "table" and r.error.tag == "wait_real_unsupported",
+    "wait_real default tag")
+  assert_eq(r.error.effect_kind, "wait_real", "wait_real effect_kind")
+
+  -- VirtualClock / MockUnityHost：仅有 schedule，无 schedule_real → 仍 Failed
+  local clock = Scheduler.VirtualClock()
+  r = fx.run(fx.wait_real(0.5), nil, { scheduler = clock })
+  assert_true(r.failed and r.error.tag == "wait_real_unsupported",
+    "VirtualClock wait_real unsupported")
+
+  package.path = "host/unity/?.lua;" .. package.path
+  local Mock = require("MockUnityHost")
+  local host, pump = Mock.with_virtual()
+  local LuaGameScheduler = require("LuaGameScheduler")
+  local sched = LuaGameScheduler.adapt(host)
+  assert_true(sched.schedule_real == nil, "Mock host has no schedule_real")
+  r = fx.run(fx.wait_real(0.2), nil, { scheduler = sched })
+  assert_true(r.failed and r.error.tag == "wait_real_unsupported",
+    "MockUnityHost wait_real unsupported")
+  -- pump 不应误醒（本来就 Failed，无 timer）
+  pump(1.0)
+
+  -- allow_real_time 路径：busy_wait 兑现（短延迟）
+  r = fx.run(fx.wait_real(0.02) >> function(_)
+    return Cont.unit(true)
+  end, nil, { allow_real_time = true })
+  assert_true(r.ok and r.value == true, "allow_real_time wait_real ok")
+
+  -- schedule_real 路径：注入简易墙钟队列（不依赖真实 sleep）
+  local real_q = {}
+  local real_now = 0
+  local host2 = {
+    now = function() return 0 end,
+    schedule = function(delay, cb)
+      return { kind = "scaled", delay = delay, cb = cb }
+    end,
+    cancel = function(h)
+      if h then h.cancelled = true end
+    end,
+    schedule_real = function(delay, cb)
+      local h = { cancelled = false, due = real_now + (delay or 0), cb = cb }
+      real_q[#real_q + 1] = h
+      return h
+    end,
+  }
+  local S = LuaGameScheduler.adapt(host2)
+  assert_true(type(S.schedule_real) == "function", "adapt forwards schedule_real")
+  local Boot = require("FxUnityBootstrap")
+  local api = Boot.bootstrap(host2)
+  local flow = api.start_session(fx.wait_real(0.3) >> function(_)
+    return Cont.unit("real")
+  end)
+  assert_true(not flow.done, "wait_real pending via schedule_real")
+  assert_true(#real_q == 1, "one real timer")
+  -- 推进「墙钟」并触发
+  real_now = 0.3
+  local h = real_q[1]
+  if not h.cancelled then h.cb() end
+  assert_true(flow.done and flow.result.ok and flow.result.value == "real",
+    "schedule_real resumes")
+
+  -- Bootstrap 自动填 scheduler（VirtualClock + wait）
+  local host3, pump3 = Mock.with_virtual()
+  local api3 = Boot.bootstrap(host3)
+  local done = false
+  local f3 = api3.start_session(fx.wait(0.25) >> function(_)
+    done = true
+    return Cont.unit(1)
+  end)
+  assert_true(not f3.done, "bootstrap wait pending")
+  pump3(0.25)
+  assert_true(f3.done and f3.result.ok and done, "bootstrap wires scheduler")
+
+  io.stdout:write("ok\n")
+end
+
+
+
+------------------------------------------------------------
 io.stdout:write("\n")
 if failures > 0 then
   io.stderr:write(failures .. " failure(s)\n")

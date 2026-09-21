@@ -21,7 +21,8 @@
 --  10. opts.scheduler / opts.game：外部游戏时间后端；wait 走 schedule，不 busy_wait。
 --  11. fx.wait_event：由 GameSim.emit / listen 兑现。
 --  11b. fx.wait_until(pred, opts?)：每 tick/interval poll 谓词；需 FrameScheduler / GameSim.schedule_poll。
---  11c. fx.chan / send / recv / close：有界 channel（mailbox）；yield chan_send|chan_recv|chan_close。
+--  11c. fx.wait_real(seconds)：墙钟等待（opt-in）；kind=wait_real；默认 Failed；见 opts.allow_real_time / schedule_real。
+--  11d. fx.chan / send / recv / close：有界 channel（mailbox）；yield chan_send|chan_recv|chan_close。
 --  12. fx.register / unregister：全局效果注册表（见 fx_registry）；未知 kind → Failed。
 --  13. fx.with_resource / Cont.bracket：资源获取-使用-释放（Done/Stopped/Failed 皆 release）。
 --  14. opts.trace / fx.set_tracer：轻量 flow 追踪（默认关闭）。
@@ -35,7 +36,7 @@
 -- 依赖：cont.lua、coro.lua、fx_sched.lua、fx_registry.lua、fx_flow.lua
 --
 -- 标准 kind 一览（详见 fx_registry.STANDARD_KINDS）：
---   内建：wait, wait_event, wait_until, chan_send, chan_recv, chan_close,
+--   内建：wait, wait_event, wait_until, wait_real, chan_send, chan_recv, chan_close,
 --         when_all, when_any, fork, join, join_handles, with_timeout, supervise
 --   演示：anim（需 register）；遗留 mock：connect, click
 
@@ -89,6 +90,21 @@ function fx.wait_until(pred, opts)
   end
   return Coro.yield(req) >> function(result)
     return Cont.unit(result)
+  end
+end
+
+-- wait_real : number → Cont Answer boolean
+-- 墙钟 / realtime 等待（秒）。**默认不用于游戏逻辑**；仅网络/SDK 等少数场景。
+-- Yield: { kind="wait_real", seconds=... }
+-- Session 兑现规则（见 fx_sched）：
+--   1) opts.scheduler.schedule_real(delay, cb) 存在 → 走宿主墙钟调度（推荐 Unity WaitForSecondsRealtime）
+--   2) 否则若 opts.allow_real_time → busy_wait / os.clock（演示/单测）
+--   3) 否则 → Failed{ tag="wait_real_unsupported", message="wait_real unsupported" }
+-- MockUnityHost / VirtualClock 默认无 schedule_real，且勿开 allow_real_time。
+function fx.wait_real(seconds)
+  seconds = seconds or 0
+  return Coro.yield({ kind = "wait_real", seconds = seconds }) >> function(_resume)
+    return Cont.unit(true)
   end
 end
 
@@ -605,6 +621,7 @@ function fx.run_parallel(tasks, handlers, opts)
     unlisten = opts.unlisten,
     async_kinds = opts.async_kinds or h.__async_kinds,
     trace = opts.trace,
+    allow_real_time = opts.allow_real_time,
   }
   return Sched.run_parallel(tasks, h, sched_opts, mode)
 end
@@ -658,6 +675,7 @@ function fx.run(ma, handlers, opts)
     unlisten = opts.unlisten,
     async_kinds = opts.async_kinds or h.__async_kinds,
     trace = opts.trace,
+    allow_real_time = opts.allow_real_time,
   })
 end
 

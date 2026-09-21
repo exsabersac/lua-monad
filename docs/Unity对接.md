@@ -43,7 +43,7 @@ cancel(handle)        →          -- 取消；迟到回调必须忽略
 
 **推荐业务 wait / 技能读条 / AI 冷却走 scaled 游戏时间**，这样暂停菜单设 `timeScale=0` 时，Cont 流程自然冻结；`cancel`（切场景、毁实体）仍应**立即**清 timer，与是否暂停无关。
 
-墙钟 / realtime 仅留给 SDK、网络超时等少数场景（工程对接文档列为 P2，默认业务禁用）。
+墙钟 / realtime：使用可选 **`fx.wait_real`**（需 `host.schedule_real` 或 `opts.allow_real_time`；否则 Failed）。默认业务仍只用 scaled `fx.wait`。
 
 ### 2.2 Lua 薄适配
 
@@ -148,8 +148,8 @@ end, { async = true })
 ## 7. 最小集成步骤清单
 
 1. 将本仓库 `src/`（至少 `monad`/`cont`/`cont_env`/`coro`/`fx`/`fx_sched`/`scheduler`）拷入工程 Lua 搜索路径。  
-2. 拷贝 `host/unity/LuaGameScheduler.lua`；按宿主方式把 C# 的 `UnityGameScheduler`（由 `.cs.txt` 改名实现）注入为 `host`。  
-3. 启动 flow 时传入 `opts.scheduler = LuaGameScheduler.adapt(host)`（或直接把 adapt 结果交给 `fx.run` / `start_session`）。  
+2. 拷贝 `host/unity/LuaGameScheduler.lua` + **`FxUnityBootstrap.lua`**；按宿主方式把 C# 的 `UnityGameScheduler`（由 `.cs.txt` 改名实现）注入为 `UnityHost`。  
+3. `local api = require("FxUnityBootstrap").from_global()`，用 `api.run` / `api.start_session`（自动填 `opts.scheduler`）；或手动 `LuaGameScheduler.adapt(host)`。  
 4. 注册 Unity kinds（`PlayAnimation` 等）；业务继续用 `Cont.withEnv` + `fx.*`。  
 5. 实体组件 `OnDestroy` → `flow.cancel()`；验证暂停（`timeScale=0`）时 wait 不醒、恢复后续跑。  
 6. 本地无 Unity 时：用 `host/unity/MockUnityHost.lua` 或直接跑 `GameSim` / `examples/dungeon_raid` 校验语义。  
@@ -165,7 +165,7 @@ end, { async = true })
 | [`src/scheduler.lua`](../src/scheduler.lua) | Scheduler 接口 + `VirtualClock` |
 | [`examples/game_sim_flow.lua`](../examples/game_sim_flow.lua) | wait + pause、事件、实体 finally |
 | [`examples/dungeon_raid/`](../examples/dungeon_raid/) | 综合 showcase（通关叙事 + 复杂 AI） |
-| [`host/unity/`](../host/unity/) | Unity 拷贝模板 + Mock |
+| [`host/unity/`](../host/unity/) | Unity 拷贝模板 + Mock + **FxUnityBootstrap** |
 
 ---
 

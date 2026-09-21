@@ -251,6 +251,7 @@ end
 | `fx.wait(seconds)` | yield `{ kind="wait", seconds }`；resume 后 `Cont.unit(true)`（≈ `Task.Delay`） |
 | `fx.wait_event(name, filter?)` | yield `{ kind="wait_event", ... }`；由 GameSim.emit / listen 兑现 |
 | `fx.wait_until(pred, opts?)` | yield `{ kind="wait_until", pred, interval? }`；FrameScheduler / GameSim poll |
+| `fx.wait_real(seconds)` | yield `{ kind="wait_real", seconds }`；**opt-in 墙钟**；需 `schedule_real` 或 `opts.allow_real_time`，否则 Failed |
 | `fx.chan(n?)` | 有界 channel（默认容量 **1**；`0`=会合）；同步返回 channel 表 |
 | `fx.send(ch, value)` | yield `{ kind="chan_send", chan, value }`；满则挂起；关闭 → Failed `chan_closed` |
 | `fx.recv(ch)` | yield `{ kind="chan_recv", chan }`；空则挂起；关闭且空 → Failed `chan_closed` |

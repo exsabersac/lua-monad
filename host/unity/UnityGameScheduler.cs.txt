@@ -3,6 +3,7 @@
 // 作用：用 Unity scaled 游戏时间为 Cont/fx 提供
 //   host.now() / host.schedule(delay, cb) / host.cancel(id)
 // 并保证 Lua 回调在主线程执行。
+// 可选：ScheduleLuaReal → host.schedule_real（仅 fx.wait_real；默认业务禁用）。
 //
 // 推荐：scaled 时间（WaitForSeconds / Time.time），这样
 //   Time.timeScale = 0  时 wait 自然暂停；恢复后继续。
@@ -10,6 +11,13 @@
 //
 // 本文件是模板：Lua 调用处标有 TODO，按 xLua / tolua / slua 补全。
 // 不要把它当成可直接编译的完整插件。
+//
+// ── xLua 快速路径（拷贝清单见 host/unity/README.md）──
+//   1. 本文件改名为 Assets/.../UnityGameScheduler.cs，挂到 DontDestroy 物体
+//   2. Awake/Start 里调用 InjectIntoLua(luaenv)
+//   3. Lua：local api = require("FxUnityBootstrap").from_global("UnityHost")
+//           api.run(fx.wait(1.0) >> ...)
+//   4. ScheduleLua / ScheduleLuaReal 的 TODO 换成 (cb as LuaFunction).Action()
 
 using System;
 using System.Collections;
@@ -69,7 +77,19 @@ public class UnityGameScheduler : MonoBehaviour
     public int Schedule(float delay, Action onDue)
     {
         int id = _nextId++;
-        Coroutine co = StartCoroutine(CoDelay(id, delay, onDue));
+        Coroutine co = StartCoroutine(CoDelay(id, delay, onDue, realtime: false));
+        _running[id] = co;
+        return id;
+    }
+
+    /// <summary>
+    /// delay 秒后（墙钟 / unscaled）在主线程调用 onDue。
+    /// 仅供 Lua host.schedule_real / fx.wait_real；游戏逻辑请继续用 Schedule。
+    /// </summary>
+    public int ScheduleReal(float delay, Action onDue)
+    {
+        int id = _nextId++;
+        Coroutine co = StartCoroutine(CoDelay(id, delay, onDue, realtime: true));
         _running[id] = co;
         return id;
     }
@@ -84,13 +104,19 @@ public class UnityGameScheduler : MonoBehaviour
         }
     }
 
-    private IEnumerator CoDelay(int id, float delay, Action onDue)
+    private IEnumerator CoDelay(int id, float delay, Action onDue, bool realtime)
     {
-        // scaled：受 timeScale 影响；Pause = timeScale 0
         if (delay > 0f)
-            yield return new WaitForSeconds(delay);
+        {
+            if (realtime)
+                yield return new WaitForSecondsRealtime(delay);
+            else
+                yield return new WaitForSeconds(delay); // scaled：受 timeScale 影响
+        }
         else
+        {
             yield return null;
+        }
 
         _running.Remove(id);
         EnqueueMainThread(() =>
@@ -106,44 +132,66 @@ public class UnityGameScheduler : MonoBehaviour
     }
 
     // -------------------------------------------------------------------------
-    // 以下：把本组件暴露给 Lua 的示例粘合（按宿主二选一改写）
+    // 以下：把本组件暴露给 Lua（xLua 示例可直接改 TODO 后用）
     // -------------------------------------------------------------------------
 
     /// <summary>
-    /// 示例：向全局 Lua 表注入 host（伪代码）。
-    /// xLua：luaenv.Global.Set("UnityHost", this) 并在 Lua 包一层函数；
-    /// 或推送三个闭包 now/schedule/cancel。
+    /// 向全局注入 UnityHost = { now, schedule, cancel [, schedule_real] }。
+    /// 之后 Lua：require("FxUnityBootstrap").from_global() → api.run(...)
     /// </summary>
-    public void InjectIntoLua(/* LuaEnv env */)
+    public void InjectIntoLua(/* XLua.LuaEnv env */)
     {
-        // TODO(xLua 示例)：
+        // TODO(xLua)：取消注释并换成你的 LuaEnv 变量名。
+        //
         // env.DoString(@"
-        //   host = host or {}
-        //   function host.now() return CS.UnityGameScheduler.Instance:Now() end
-        //   function host.schedule(delay, cb)
-        //     return CS.UnityGameScheduler.Instance:ScheduleLua(delay, cb)
+        //   UnityHost = UnityHost or {}
+        //   local U = CS.UnityGameScheduler.Instance
+        //   function UnityHost.now()
+        //     return U:Now()
         //   end
-        //   function host.cancel(id)
-        //     CS.UnityGameScheduler.Instance:Cancel(id)
+        //   function UnityHost.schedule(delay, cb)
+        //     return U:ScheduleLua(delay, cb)
+        //   end
+        //   function UnityHost.cancel(id)
+        //     U:Cancel(id)
+        //   end
+        //   -- 可选：仅当确需 fx.wait_real（网络/SDK）时打开
+        //   function UnityHost.schedule_real(delay, cb)
+        //     return U:ScheduleLuaReal(delay, cb)
         //   end
         // ");
         //
-        // ScheduleLua 需把 LuaFunction 包成 Action，并在主线程 Call。
+        // 等价「不 DoString、纯 C# Push」示意：
+        //   env.Global.Set("UnityHost", env.NewTable());
+        //   // 再为表 Set("now", ...) 三个/四个委托 —— 视 xLua 版本 API 而定。
+        //
+        // ScheduleLua / ScheduleLuaReal 必须把 LuaFunction 包成 Action，并在主线程 Call。
     }
 
     /// <summary>
-    /// 供 Lua 调用的 schedule：把 Lua 回调封成 Action，到期主线程执行。
-    /// 具体类型（LuaFunction / LuaTable）随宿主而变 —— 此处仅示意。
+    /// 供 Lua 调用的 schedule（scaled）：把 Lua 回调封成 Action，到期主线程执行。
     /// </summary>
     public int ScheduleLua(float delay, object luaCallback)
     {
-        return Schedule(delay, () =>
-        {
-            // TODO: 按宿主调用 luaCallback（必须已在主线程）
-            // xLua: (luaCallback as XLua.LuaFunction)?.Action();
-            // 调用后勿跨线程缓存失效的 LuaFunction。
-            if (luaCallback == null) return;
-            Debug.LogWarning("UnityGameScheduler.ScheduleLua: wire luaCallback for your Lua host");
-        });
+        return Schedule(delay, () => InvokeLuaCallback(luaCallback, "ScheduleLua"));
+    }
+
+    /// <summary>
+    /// 供 Lua 调用的墙钟 schedule（unscaled）。对应 host.schedule_real。
+    /// </summary>
+    public int ScheduleLuaReal(float delay, object luaCallback)
+    {
+        return ScheduleReal(delay, () => InvokeLuaCallback(luaCallback, "ScheduleLuaReal"));
+    }
+
+    private static void InvokeLuaCallback(object luaCallback, string tag)
+    {
+        if (luaCallback == null) return;
+        // TODO(xLua)：
+        //   var fn = luaCallback as XLua.LuaFunction;
+        //   fn?.Action();          // 无参回调；或 fn.Call()
+        //   // 不要在非主线程缓存/调用 LuaFunction；本类已保证在 Update 出队后调用。
+        // TODO(tolua / slua)：换成对应的 LuaFunction.Call。
+        Debug.LogWarning("UnityGameScheduler." + tag + ": wire luaCallback for your Lua host");
     }
 }

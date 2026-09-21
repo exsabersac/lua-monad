@@ -4,7 +4,7 @@
 -- Session（fx_sched）在解析「非内建」kind 时查本表（再经 handlers 合并覆盖）。
 --
 -- 内建由调度器直接处理（不必 register）：
---   wait, wait_event, wait_until, chan_send, chan_recv, chan_close,
+--   wait, wait_event, wait_until, wait_real, chan_send, chan_recv, chan_close,
 --   when_all, when_any, fork, join, join_handles, with_timeout, supervise
 -- 演示 / 遗留 mock（默认 handlers 或示例 register）：
 --   connect, click  — 教学 mock
@@ -30,6 +30,10 @@ M.STANDARD_KINDS = {
   wait_until = {
     role = "builtin",
     desc = "每 tick/interval poll pred()；真值 resume；需 FrameScheduler/GameSim.schedule_poll",
+  },
+  wait_real = {
+    role = "builtin_opt_in",
+    desc = "墙钟等待 seconds；需 scheduler.schedule_real 或 opts.allow_real_time；否则 Failed(wait_real_unsupported)；默认业务禁用",
   },
   chan_send = {
     role = "builtin",

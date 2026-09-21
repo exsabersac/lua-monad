@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.8-eng — 2026-09-21
+
+- **Unity host 强化**：`host/unity/`
+  - `LuaGameScheduler.lua`：xLua 接线注释；可选转发 `host.schedule_real` → `sched.schedule_real`
+  - 新增 **`FxUnityBootstrap.lua`**：`bootstrap(host)` / `from_global` 自动填 `fx.run` / `start_session` 的 `opts.scheduler`
+  - `UnityGameScheduler.cs.txt`：补全 xLua `InjectIntoLua` / `ScheduleLua` / **`ScheduleLuaReal`**（墙钟）示例
+  - `README.md`：拷贝清单（copy-paste checklist）
+- **可选墙钟 `fx.wait_real(seconds)`**（默认业务禁用）
+  - yield kind `wait_real`；兑现顺序：`scheduler.schedule_real` → 否则 `opts.allow_real_time` busy_wait → 否则 **Failed** `{tag=wait_real_unsupported}`
+  - `fx_registry.STANDARD_KINDS.wait_real`；MockUnityHost / VirtualClock 无 `schedule_real` 时清晰失败
+  - 测试：unsupported 路径 + `allow_real_time` + `schedule_real` / Bootstrap 接线
+- 文档：验收 / 工程对接 / Unity对接 / API；版本号 → `0.2.8-eng`
+
+
 ## 0.2.7-eng — 2026-09-21
 
 - **监督式重启（P2）**：`fx.supervise(child_ma, opts?)`

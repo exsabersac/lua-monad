@@ -10,6 +10,7 @@
 -- wait 在多任务时登记 deadline（墙钟），
 -- 单任务时可走 handlers.wait（兼容瞬时 mock）；fork 立刻把 handle 还给父任务。
 -- 若 opts.scheduler（或 opts.game）提供，wait 走 schedule/cancel，不再 busy_wait；
+-- wait_real：scheduler.schedule_real 或 opts.allow_real_time，否则 Failed(wait_real_unsupported)；
 -- wait_until 走 schedule_poll（FrameScheduler / GameSim）；无 poll 时用 schedule 轮询模拟；
 -- session 可异步完成（timer/poll 回调 resume + pump）。
 -- 截止时间：opts.deadline / opts.timeout，以及 with_timeout，向下传播到 fork 子任务；
@@ -1193,6 +1194,69 @@ drive_until_block = function(nursery, task)
         assert(handler, "fx_sched: no handler for kind=wait")
         local next_input = handler(req)
         task.answer = Coro.resume(task.answer, next_input)
+      end
+
+    ------------------------------------------------------------
+    -- wait_real：墙钟等待（opt-in；默认 Failed）
+    --   scheduler.schedule_real → 宿主 realtime
+    --   opts.allow_real_time → busy_wait
+    --   否则 → Failed{tag=wait_real_unsupported}
+    ------------------------------------------------------------
+    elseif req.kind == "wait_real" then
+      local secs = req.seconds or 0
+      emit_trace(opts, { type = "yield", task_id = task.id, kind = "wait_real", seconds = secs })
+      local scheduler = opts.scheduler
+      if scheduler ~= nil and type(scheduler.schedule_real) == "function" then
+        local flag = { cancelled = false }
+        local handle = scheduler.schedule_real(secs, function()
+          when_flow_active(opts, function()
+            if flag.cancelled then
+              return
+            end
+            if task.finished or not task.waiting then
+              return
+            end
+            task.waiting = false
+            task.timer_handle = nil
+            task._timer_flag = nil
+            if opts.verbose_wait then
+              print(string.format("[fx.session] task#%d wait_real done (schedule_real)", task.id))
+            end
+            emit_trace(opts, { type = "resume", task_id = task.id, kind = "wait_real" })
+            task.answer = Coro.resume(task.answer, true)
+            if type(opts._pump) == "function" then
+              opts._pump()
+            end
+          end)
+        end)
+        task.timer_handle = handle
+        task._timer_flag = flag
+        task.waiting = true
+        if opts.verbose_wait then
+          print(string.format("[fx.session] task#%d wait_real %.3fs (schedule_real)", task.id, secs))
+        end
+        return "wait"
+      elseif opts.allow_real_time then
+        if opts.verbose_wait then
+          print(string.format("[fx.session] task#%d wait_real %.3fs (allow_real_time busy)", task.id, secs))
+        end
+        busy_wait(secs)
+        emit_trace(opts, { type = "resume", task_id = task.id, kind = "wait_real" })
+        task.answer = Coro.resume(task.answer, true)
+      else
+        local err = {
+          tag = "wait_real_unsupported",
+          message = "wait_real unsupported",
+          effect_kind = "wait_real",
+        }
+        emit_trace(opts, {
+          type = "failed",
+          task_id = task.id,
+          error = err,
+          kind = "wait_real",
+        })
+        task.answer = Coro.Failed(err)
+        return "failed"
       end
 
     ------------------------------------------------------------
