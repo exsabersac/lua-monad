@@ -15,9 +15,17 @@
 2. [Cont 环境组合](docs/Cont环境组合.md) — `withEnv`、属性、`AfterStep`  
 3. [异步效果同步写法](docs/异步效果同步写法.md) — `fx.wait` / `connect` / `click`；**并行** `when_all`/`when_any`；**Fork/Join** `fork`/`join`  
 4. [工程对接与后续](docs/工程对接与后续.md) — 游戏时间 Scheduler、**GameSim**、**地牢突袭** 综合 demo、正式工程对接与 P0–P2  
-5. [设计说明](docs/设计说明.md) · [API 参考](docs/API.md)
+5. [Unity 对接](docs/Unity对接.md) — Unity + Lua 5.3（xLua/tolua/slua）、scaled 游戏时间、主线程桥接、[`host/unity/`](host/unity/) 模板  
+6. [Lua 5.3 兼容性](docs/Lua53兼容性.md) — `__shr`、避免 5.4-only、`lua5.3 tests/run.lua`  
+7. [设计说明](docs/设计说明.md) · [API 参考](docs/API.md)
 
-需要 **Lua 5.4+**；在仓库根目录执行示例（脚本已设置 `package.path`）。
+需要 **Lua 5.3+**（Unity / xLua / tolua / slua 多为 5.3；已在 5.3.6 验证）。在仓库根目录执行示例（脚本已设置 `package.path`）：
+
+```bash
+lua5.3 tests/run.lua
+# 或
+lua tests/run.lua   # 若 lua 已是 5.3+
+```
 
 ---
 
@@ -202,6 +210,9 @@ lua examples/fx_with_timeout.lua
 lua examples/dungeon_raid/main.lua
 lua examples/fx_cancel_tree.lua
 lua examples/cont_catch_throw.lua
+
+# Unity 适配形状（无编辑器）：Mock host
+lua5.3 -e 'package.path="src/?.lua;host/unity/?.lua;"..package.path; require("MockUnityHost").demo()'
 ```
 
 ---
@@ -242,9 +253,10 @@ lua-monad/
   docs/CPS设计与原理.md
   docs/Cont环境组合.md
   docs/异步效果同步写法.md
-  docs/{设计说明,API,do语法,工程对接与后续}.md
+  docs/{设计说明,API,do语法,工程对接与后续,Unity对接,Lua53兼容性}.md
   examples/cont_*.lua / coro_*.lua / fx_*.lua / …
   examples/dungeon_raid/  # 地牢突袭综合 demo（GameSim）
+  host/unity/             # Unity 对接模板（LuaGameScheduler + C# stub + Mock）
   src/game_sim.lua / scheduler.lua
   tests/run.lua
   tools/mdo.lua

@@ -1,0 +1,149 @@
+// UnityGameScheduler.cs.txt — TEMPLATE（请复制为 .cs 后接入工程）
+//
+// 作用：用 Unity scaled 游戏时间为 Cont/fx 提供
+//   host.now() / host.schedule(delay, cb) / host.cancel(id)
+// 并保证 Lua 回调在主线程执行。
+//
+// 推荐：scaled 时间（WaitForSeconds / Time.time），这样
+//   Time.timeScale = 0  时 wait 自然暂停；恢复后继续。
+// Pause 菜单：设 timeScale=0 即可，不必在本类再维护 pause 标志。
+//
+// 本文件是模板：Lua 调用处标有 TODO，按 xLua / tolua / slua 补全。
+// 不要把它当成可直接编译的完整插件。
+
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+
+/// <summary>
+/// Cont/fx 游戏时间后端（scaled）。挂到常驻物体上。
+/// </summary>
+public class UnityGameScheduler : MonoBehaviour
+{
+    public static UnityGameScheduler Instance { get; private set; }
+
+    private int _nextId = 1;
+    private readonly Dictionary<int, Coroutine> _running = new Dictionary<int, Coroutine>();
+    private readonly Queue<Action> _mainThread = new Queue<Action>();
+    private readonly object _queueLock = new object();
+
+    void Awake()
+    {
+        if (Instance != null && Instance != this)
+        {
+            Destroy(gameObject);
+            return;
+        }
+        Instance = this;
+        DontDestroyOnLoad(gameObject);
+    }
+
+    void Update()
+    {
+        // 主线程出队：到期 timer 只入队，真正碰 Lua 在这里
+        while (true)
+        {
+            Action a = null;
+            lock (_queueLock)
+            {
+                if (_mainThread.Count > 0)
+                    a = _mainThread.Dequeue();
+            }
+            if (a == null) break;
+            try { a(); }
+            catch (Exception e) { Debug.LogException(e); }
+        }
+    }
+
+    /// <summary>当前 scaled 游戏时间（秒），对齐 Time.time。</summary>
+    public double Now()
+    {
+        return Time.time;
+    }
+
+    /// <summary>
+    /// delay 秒后（scaled）在主线程调用 onDue。
+    /// 返回 id，供 Cancel。
+    /// </summary>
+    public int Schedule(float delay, Action onDue)
+    {
+        int id = _nextId++;
+        Coroutine co = StartCoroutine(CoDelay(id, delay, onDue));
+        _running[id] = co;
+        return id;
+    }
+
+    /// <summary>取消尚未触发的调度；迟到回调会被跳过。</summary>
+    public void Cancel(int id)
+    {
+        if (_running.TryGetValue(id, out Coroutine co))
+        {
+            if (co != null) StopCoroutine(co);
+            _running.Remove(id);
+        }
+    }
+
+    private IEnumerator CoDelay(int id, float delay, Action onDue)
+    {
+        // scaled：受 timeScale 影响；Pause = timeScale 0
+        if (delay > 0f)
+            yield return new WaitForSeconds(delay);
+        else
+            yield return null;
+
+        _running.Remove(id);
+        EnqueueMainThread(() =>
+        {
+            // 若 Cancel 已拆掉，上面 Remove 后不会进到这里的竞态由 Lua 侧 handle.cancelled 再挡一层
+            onDue?.Invoke();
+        });
+    }
+
+    private void EnqueueMainThread(Action a)
+    {
+        lock (_queueLock) { _mainThread.Enqueue(a); }
+    }
+
+    // -------------------------------------------------------------------------
+    // 以下：把本组件暴露给 Lua 的示例粘合（按宿主二选一改写）
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// 示例：向全局 Lua 表注入 host（伪代码）。
+    /// xLua：luaenv.Global.Set("UnityHost", this) 并在 Lua 包一层函数；
+    /// 或推送三个闭包 now/schedule/cancel。
+    /// </summary>
+    public void InjectIntoLua(/* LuaEnv env */)
+    {
+        // TODO(xLua 示例)：
+        // env.DoString(@"
+        //   host = host or {}
+        //   function host.now() return CS.UnityGameScheduler.Instance:Now() end
+        //   function host.schedule(delay, cb)
+        //     return CS.UnityGameScheduler.Instance:ScheduleLua(delay, cb)
+        //   end
+        //   function host.cancel(id)
+        //     CS.UnityGameScheduler.Instance:Cancel(id)
+        //   end
+        // ");
+        //
+        // ScheduleLua 需把 LuaFunction 包成 Action，并在主线程 Call。
+    }
+
+    /// <summary>
+    /// 供 Lua 调用的 schedule：把 Lua 回调封成 Action，到期主线程执行。
+    /// 具体类型（LuaFunction / LuaTable）随宿主而变 —— 此处仅示意。
+    /// </summary>
+    public int ScheduleLua(float delay, object luaCallback)
+    {
+        return Schedule(delay, () =>
+        {
+            // TODO: 按宿主调用 luaCallback（必须已在主线程）
+            // xLua: (luaCallback as XLua.LuaFunction)?.Action();
+            // 调用后勿跨线程缓存失效的 LuaFunction。
+            if (luaCallback == null) return;
+            Debug.LogWarning("UnityGameScheduler.ScheduleLua: wire luaCallback for your Lua host");
+        });
+    }
+}
