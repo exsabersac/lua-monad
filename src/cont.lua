@@ -226,6 +226,7 @@ end
 --- bracket(acquire, use, release) — 资源作用域（同 fx.with_resource）
 -- acquire() → resource | Cont；use(r) → Cont；release(r, outcome) → Cont|value
 -- Done / Stopped / Failed / Cont.throw 路径均会 release（经 Cont.finally）
+-- 嵌套：内层 release 先于外层（finally 栈）；fork 子树取消时各任务自身的 bracket 仍会 release
 function M.bracket(acquire, use, release)
   assert(type(acquire) == "function", "Cont.bracket: acquire must be function")
   assert(type(use) == "function", "Cont.bracket: use must be function")

@@ -9,6 +9,8 @@
 -- 单任务时可走 handlers.wait（兼容瞬时 mock）；fork 立刻把 handle 还给父任务。
 -- 若 opts.scheduler（或 opts.game）提供，wait 走 schedule/cancel，不再 busy_wait；
 -- session 可异步完成（timer 回调 resume + pump）。
+-- 截止时间：opts.deadline / opts.timeout，以及 with_timeout，向下传播到 fork 子任务；
+-- 父 deadline 触发时递归 Stopped 未完成后代（finally 经 force_stop/abort）。
 
 local Coro = require("coro")
 local Cont = require("cont")
@@ -174,6 +176,7 @@ local function alloc_task(nursery, ma)
     group_ref = nil,
     group_pos = nil,
     parent_id = nil, -- fork 时记录父任务 id（取消传播树）
+    deadline_abs = nil, -- 继承的绝对截止时间（游戏时间或墙钟）
     joiners = {},
     fail_index = nil,
     result = nil,
@@ -244,17 +247,113 @@ local function force_stop_task_answer(answer, reason)
   return Coro.force_stop(answer, reason or "cancelled")
 end
 
+-- 当前时钟：有 scheduler 用游戏时间，否则墙钟
+local function clock_now(opts)
+  opts = opts or {}
+  local scheduler = opts.scheduler
+  if scheduler ~= nil and type(scheduler.now) == "function" then
+    return scheduler.now()
+  end
+  return now()
+end
+
+-- 收紧任务绝对截止时间（取更早者）
+local function apply_deadline_abs(task, abs)
+  if abs == nil or task == nil then
+    return
+  end
+  if task.deadline_abs == nil or abs < task.deadline_abs then
+    task.deadline_abs = abs
+  end
+end
+
+-- 子任务继承父任务剩余 deadline
+local function inherit_deadline(child, parent)
+  if child == nil or parent == nil then
+    return
+  end
+  if parent.deadline_abs ~= nil then
+    apply_deadline_abs(child, parent.deadline_abs)
+  end
+end
+
 -- 前向声明
 local drive_until_block
 local on_task_terminal
 local settle_group
 local try_complete_joins
+local cancel_descendants
+
+-- 取消 ancestor 的所有未完成后代（不含 ancestor 自身）；经 force_stop 跑 finally
+cancel_descendants = function(nursery, ancestor_id, reason)
+  reason = reason or "cancelled"
+  local function is_descendant(task)
+    local pid = task.parent_id
+    local guard = 0
+    while pid ~= nil and guard < 10000 do
+      guard = guard + 1
+      if pid == ancestor_id then
+        return true
+      end
+      local p = nursery.tasks[pid]
+      if not p then
+        return false
+      end
+      pid = p.parent_id
+    end
+    return false
+  end
+  local function depth_of(task)
+    local d = 0
+    local pid = task.parent_id
+    local guard = 0
+    while pid ~= nil and guard < 10000 do
+      guard = guard + 1
+      d = d + 1
+      local p = nursery.tasks[pid]
+      if not p then
+        break
+      end
+      pid = p.parent_id
+    end
+    return d
+  end
+  local ids = {}
+  for id, t in pairs(nursery.tasks) do
+    if t and not t.finished and is_descendant(t) then
+      ids[#ids + 1] = id
+    end
+  end
+  -- 深者优先，便于子 finally 先于祖先副作用
+  table.sort(ids, function(a, b)
+    local da = depth_of(nursery.tasks[a])
+    local db = depth_of(nursery.tasks[b])
+    if da ~= db then
+      return da > db
+    end
+    return a < b
+  end)
+  for _, id in ipairs(ids) do
+    local t = nursery.tasks[id]
+    if t and not t.finished then
+      clear_task_waits(t)
+      t.answer = force_stop_task_answer(t.answer, reason)
+      if not t._terminal_handled then
+        on_task_terminal(nursery, t, "stopped")
+      else
+        mark_finished(t)
+      end
+    end
+  end
+end
 
 local function cancel_siblings(nursery, group, except_id)
   for _, cid in ipairs(group.child_ids) do
     if cid ~= except_id then
       local c = nursery.tasks[cid]
       if c and not c.finished then
+        -- 先停后代（fork 子树），再停组员本身
+        cancel_descendants(nursery, cid, "cancelled")
         clear_task_waits(c)
         c.answer = force_stop_task_answer(c.answer, "cancelled")
         mark_finished(c)
@@ -285,6 +384,7 @@ local function cancel_fork_siblings(nursery, joined_ids, joiner_id, reason)
     if id ~= joiner_id and not joined_ids[id] then
       local t = nursery.tasks[id]
       if t and not t.finished and t.parent_id and parents[t.parent_id] then
+        cancel_descendants(nursery, id, reason)
         clear_task_waits(t)
         t.answer = force_stop_task_answer(t.answer, reason)
         -- 标记终态并唤醒仍在等该兄弟的 join 方
@@ -548,6 +648,7 @@ local function start_group(nursery, parent, req, mode)
     child.group_ref = group
     child.group_pos = i
     child.parent_id = parent.id -- 结构化并行也挂到父，便于 session cancel 树
+    inherit_deadline(child, parent)
     group.child_ids[i] = child.id
   end
   parent.parked = "group"
@@ -557,11 +658,23 @@ end
 
 
 -- 启动 with_timeout：body 与 wait(seconds) 竞速
+-- 若父任务已有 deadline_abs，取更紧的剩余时间；body 打上绝对截止供 fork 继承
 local function start_timeout_race(nursery, parent, req)
   local ma = req.task
   local secs = req.seconds or 0
   local on_timeout = req.on_timeout or "timeout"
   assert(ma ~= nil, "fx_sched: with_timeout requires .task")
+
+  local opts = nursery.opts or {}
+  local tnow = clock_now(opts)
+  local abs = tnow + secs
+  if parent.deadline_abs ~= nil and parent.deadline_abs < abs then
+    abs = parent.deadline_abs
+  end
+  local effective = abs - tnow
+  if effective < 0 then
+    effective = 0
+  end
 
   local group = {
     parent_id = parent.id,
@@ -579,9 +692,10 @@ local function start_timeout_race(nursery, parent, req)
   body.group_pos = 1
   body.timeout_role = "body"
   body.parent_id = parent.id
+  apply_deadline_abs(body, abs)
   group.child_ids[1] = body.id
 
-  local timer_ma = Coro.yield({ kind = "wait", seconds = secs }) >> function(_)
+  local timer_ma = Coro.yield({ kind = "wait", seconds = effective }) >> function(_)
     return Cont.unit(true)
   end
   local timer = alloc_task(nursery, timer_ma)
@@ -693,6 +807,7 @@ drive_until_block = function(nursery, task)
       assert(ma ~= nil, "fx_sched: fork requires .task")
       local child = alloc_task(nursery, ma)
       child.parent_id = task.id -- 取消传播树：记录 fork 父
+      inherit_deadline(child, task) -- 继承父剩余 deadline
       local handle = { id = child.id }
       emit_trace(opts, {
         type = "fork",
@@ -985,6 +1100,26 @@ function M.start_session(ma, handlers, opts)
   local root = alloc_task(nursery, ma)
   nursery.root_id = root.id
 
+  -- session 级截止：opts.deadline（绝对）或 opts.timeout（相对秒）
+  local t0 = clock_now(opts)
+  if opts.deadline ~= nil then
+    assert(type(opts.deadline) == "number",
+      "fx_sched: opts.deadline must be number (absolute clock)")
+    apply_deadline_abs(root, opts.deadline)
+  elseif opts.timeout ~= nil then
+    assert(type(opts.timeout) == "number" and opts.timeout >= 0,
+      "fx_sched: opts.timeout must be number >= 0 (seconds)")
+    apply_deadline_abs(root, t0 + opts.timeout)
+  end
+  local session_on_timeout = opts.on_timeout
+  if session_on_timeout == nil then
+    session_on_timeout = "timeout"
+  end
+  if root.deadline_abs ~= nil and opts.scheduler == nil then
+    nursery.session_deadline = root.deadline_abs
+    nursery.session_on_timeout = session_on_timeout
+  end
+
   local flow = {
     _is_flow = true,
     done = false,
@@ -996,7 +1131,23 @@ function M.start_session(ma, handlers, opts)
   emit_trace(opts, {
     type = "flow_start",
     root_id = root.id,
+    deadline_abs = root.deadline_abs,
   })
+
+  local function clear_deadline_watchdog()
+    if flow._deadline_flag then
+      flow._deadline_flag.cancelled = true
+      flow._deadline_flag = nil
+    end
+    if flow._deadline_handle ~= nil then
+      local scheduler = opts.scheduler
+      if scheduler and type(scheduler.cancel) == "function" then
+        scheduler.cancel(flow._deadline_handle)
+      end
+      flow._deadline_handle = nil
+    end
+    nursery.session_deadline = nil
+  end
 
   local function result_of_root()
     local a = root.answer
@@ -1019,6 +1170,7 @@ function M.start_session(ma, handlers, opts)
   end
 
   local function settle_done()
+    clear_deadline_watchdog()
     flow.done = true
     flow.result = result_of_root()
     local r = flow.result
@@ -1029,6 +1181,75 @@ function M.start_session(ma, handlers, opts)
     elseif r.failed then
       emit_trace(opts, { type = "failed", root_id = root.id, error = r.error })
     end
+    return flow.result
+  end
+
+  -- session / 继承截止触发：子树 Stopped（finally），根 Failed(on_timeout)
+  local function fire_session_deadline()
+    if flow.done then
+      return flow.result
+    end
+    emit_trace(opts, {
+      type = "cancel",
+      root_id = root.id,
+      reason = "deadline",
+    })
+    clear_deadline_watchdog()
+    -- 先停所有非根未完成任务
+    local ids = {}
+    for id, t in pairs(nursery.tasks) do
+      if t and not t.finished and id ~= root.id then
+        ids[#ids + 1] = id
+      end
+    end
+    local function depth_of(task)
+      local d = 0
+      local pid = task.parent_id
+      local guard = 0
+      while pid ~= nil and guard < 10000 do
+        guard = guard + 1
+        d = d + 1
+        local p = nursery.tasks[pid]
+        if not p then
+          break
+        end
+        pid = p.parent_id
+      end
+      return d
+    end
+    table.sort(ids, function(a, b)
+      local da = depth_of(nursery.tasks[a])
+      local db = depth_of(nursery.tasks[b])
+      if da ~= db then
+        return da > db
+      end
+      return a < b
+    end)
+    for _, id in ipairs(ids) do
+      local t = nursery.tasks[id]
+      if t and not t.finished then
+        clear_task_waits(t)
+        t.answer = force_stop_task_answer(t.answer, "cancelled")
+        if not t._terminal_handled then
+          on_task_terminal(nursery, t, "stopped")
+        else
+          mark_finished(t)
+        end
+      end
+    end
+    if not root.finished then
+      clear_task_waits(root)
+      root.answer = Coro.Failed(session_on_timeout)
+      mark_finished(root)
+      root._terminal_handled = true
+    end
+    flow.done = true
+    flow.result = { ok = false, failed = true, error = session_on_timeout }
+    emit_trace(opts, {
+      type = "failed",
+      root_id = root.id,
+      error = session_on_timeout,
+    })
     return flow.result
   end
 
@@ -1072,6 +1293,7 @@ function M.start_session(ma, handlers, opts)
 
     while not flow.done do
       if is_cancelled(opts.cancel) then
+        clear_deadline_watchdog()
         emit_trace(opts, { type = "cancel", root_id = root.id, reason = "cancelled" })
         cancel_all_unfinished(nursery, "cancelled")
         if not root.finished then
@@ -1107,6 +1329,12 @@ function M.start_session(ma, handlers, opts)
           end
         end
       end
+      if nursery.session_deadline ~= nil then
+        any_deadline = true
+        if min_dl == nil or nursery.session_deadline < min_dl then
+          min_dl = nursery.session_deadline
+        end
+      end
 
       if any_deadline and opts.scheduler == nil then
         local sleep_for = min_dl - now()
@@ -1114,6 +1342,11 @@ function M.start_session(ma, handlers, opts)
           busy_wait(sleep_for)
         end
         local tnow = now()
+        if nursery.session_deadline ~= nil
+            and nursery.session_deadline <= tnow + 1e-9 then
+          pumping = false
+          return fire_session_deadline()
+        end
         local due = {}
         for _, task in pairs(nursery.tasks) do
           if not task.finished and task.waiting and task.deadline
@@ -1193,6 +1426,7 @@ function M.start_session(ma, handlers, opts)
     if flow.done then
       return flow.result
     end
+    clear_deadline_watchdog()
     emit_trace(opts, { type = "cancel", root_id = root.id, reason = reason })
     cancel_all_unfinished(nursery, reason)
     if not root.finished then
@@ -1212,6 +1446,26 @@ function M.start_session(ma, handlers, opts)
 
   opts._pump = pump
   nursery.opts = opts -- 确保 clear_task_waits 见到 _pump/scheduler
+
+  -- 有 scheduler 时挂 deadline 看门狗（游戏时间）
+  if root.deadline_abs ~= nil and opts.scheduler ~= nil then
+    local delay = root.deadline_abs - clock_now(opts)
+    if delay < 0 then
+      delay = 0
+    end
+    local flag = { cancelled = false }
+    flow._deadline_flag = flag
+    flow._deadline_handle = opts.scheduler.schedule(delay, function()
+      if flag.cancelled or flow.done then
+        return
+      end
+      fire_session_deadline()
+      if type(opts._pump) == "function" then
+        opts._pump()
+      end
+    end)
+  end
+
   pump()
   return flow
 end

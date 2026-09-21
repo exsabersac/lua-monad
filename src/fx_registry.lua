@@ -31,7 +31,7 @@ M.STANDARD_KINDS = {
   fork = { role = "builtin", desc = "非结构化并发：启动子任务，立刻 resume handle" },
   join = { role = "builtin", desc = "等待单个 fork handle" },
   join_handles = { role = "builtin", desc = "按序等待多个 fork handle" },
-  with_timeout = { role = "builtin", desc = "与 wait(deadline) 竞速；超时 → Failed" },
+  with_timeout = { role = "builtin", desc = "与 wait(deadline) 竞速；超时 → Failed；截止向下传播到 fork" },
   anim = {
     role = "demo",
     desc = "演示用异步动画；工程侧自行 register(async=true)",

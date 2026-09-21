@@ -9,7 +9,9 @@
 --   5. fx.fork / fx.join / fx.join_handles：非结构化并发（先 fork，中间可做别的事，再 join）。
 --   6. fx.map_parallel：有限并发池（滑动窗口 fork/join，结果按输入顺序）。
 --   7. fx.with_timeout：与 wait(deadline) 竞速；超时 → Failed("timeout")（可自定义）。
+--      截止时间向下传播到 fork 子任务；子可再用更紧的 with_timeout。
 --   8. 取消传播树：session cancel 停止未完成子任务；join 可选 cancel_siblings。
+--      父 deadline 触发时递归 Stopped 未完成后代（finally 经 force_stop）。
 --   9. 这不是真实网络/UI；默认 handlers 只是 mock，便于演示与测试。
 --  10. opts.scheduler / opts.game：外部游戏时间后端；wait 走 schedule，不 busy_wait。
 --  11. fx.wait_event：由 GameSim.emit / listen 兑现。
@@ -258,6 +260,8 @@ end
 -- with_timeout : Cont Answer a → seconds → opts? → Cont Answer a
 -- 与 fx.wait(seconds) 竞速：ma 先 Done → 返回其值；超时 → Failed
 -- 默认错误为字符串 "timeout"；opts.on_timeout 可换成自定义 reason（仍走 Failed）
+-- 截止时间写入 body.deadline_abs，fork 子任务继承剩余 deadline；超时取消时递归 Stopped 后代
+-- 若父已有更紧 deadline（session opts 或外层 with_timeout），取 min
 -- 与 Cont.withEnv __Timeout__ 对照：属性是逐步（per-step）超时；本组合子包裹整段 Cont
 -- Yield: { kind="with_timeout", task=ma, seconds=s, on_timeout=err }
 function fx.with_timeout(ma, seconds, opts)

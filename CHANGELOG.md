@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1-eng — 2026-09-21
+
+- **截止时间向下传播**：`fx.with_timeout` / `opts.timeout` / `opts.deadline` 将绝对截止写入任务；`fork` / `when_all` / `when_any` 子任务继承剩余 deadline（有 scheduler 时为游戏时间）
+- 父 deadline 触发：包装侧 `Failed`；未完成后代递归 `Stopped`（`force_stop` → finally / bracket release）
+- 子可再用更紧的 `with_timeout`（取 min）
+- 嵌套 `Cont.bracket`：文档注记 + 测试（内层 release 先于外层）
+- 验收清单 / 异步效果文档同步
+
 ## 0.2.0-eng — 2026-09-21
 
 工程可用增量（Unity + Lua 5.3 目标）：

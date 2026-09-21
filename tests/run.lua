@@ -1693,6 +1693,122 @@ end
 
 
 ------------------------------------------------------------
+-- fx：截止时间向下传播（fork 继承 deadline）
+------------------------------------------------------------
+do
+  local fx = require("fx")
+  local Cont = require("cont")
+  local Scheduler = require("scheduler")
+  local Sched = require("fx_sched")
+  local GameSim = require("game_sim")
+
+  -- VirtualClock：父 with_timeout 超时 → fork 子 Stopped，finally 跑
+  local child_fin = false
+  local child_done = false
+  local clock = Scheduler.VirtualClock()
+  local child_ma = Cont.finally(
+    fx.wait(5.0) >> function(_)
+      child_done = true
+      return Cont.unit("late-child")
+    end,
+    function(outcome)
+      child_fin = outcome.status == "stopped"
+      return true
+    end
+  )
+  local flow = Sched.start_session(
+    fx.with_timeout(
+      fx.fork(child_ma) >> function(h)
+        return fx.join(h)
+      end,
+      0.3
+    ),
+    {},
+    { scheduler = clock }
+  )
+  assert_true(not flow.done, "deadline inherit: pending")
+  clock.advance(0.29)
+  assert_true(not flow.done, "deadline inherit: before timeout")
+  clock.advance(0.02)
+  assert_true(flow.done and flow.result.failed and flow.result.error == "timeout",
+    "deadline inherit: parent Failed(timeout)")
+  assert_true(child_done == false, "deadline inherit: child not Done")
+  assert_true(child_fin, "deadline inherit: child finally on Stopped")
+
+  -- 子更紧 with_timeout：在父 deadline 之前 Failed
+  clock = Scheduler.VirtualClock()
+  flow = Sched.start_session(
+    fx.with_timeout(
+      fx.fork(
+        fx.with_timeout(fx.wait(5.0), 0.1, { on_timeout = "child-to" })
+      ) >> function(h)
+        return fx.join(h)
+      end,
+      1.0
+    ),
+    {},
+    { scheduler = clock }
+  )
+  clock.advance(0.1)
+  assert_true(flow.done and flow.result.failed and flow.result.error == "child-to",
+    "tighter child with_timeout wins")
+
+  -- session opts.timeout：根 Failed，fork 子 Stopped + finally
+  clock = Scheduler.VirtualClock()
+  child_fin = false
+  child_done = false
+  child_ma = Cont.finally(
+    fx.wait(2.0) >> function(_)
+      child_done = true
+      return Cont.unit(1)
+    end,
+    function(outcome)
+      child_fin = outcome.status == "stopped"
+      return true
+    end
+  )
+  flow = Sched.start_session(
+    fx.fork(child_ma) >> function(h)
+      return fx.join(h)
+    end,
+    {},
+    { scheduler = clock, timeout = 0.25 }
+  )
+  clock.advance(0.25)
+  assert_true(flow.done and flow.result.failed and flow.result.error == "timeout",
+    "opts.timeout session Failed")
+  assert_true(child_done == false and child_fin, "opts.timeout child finally")
+
+  -- GameSim：游戏时间 with_timeout 取消 fork 子树
+  local sim = GameSim.new({ dt = 0.05 })
+  child_fin = false
+  child_done = false
+  local r = sim:run(
+    fx.with_timeout(
+      fx.fork(
+        Cont.finally(
+          fx.wait(2.0) >> function(_)
+            child_done = true
+            return Cont.unit("x")
+          end,
+          function(outcome)
+            child_fin = outcome.status == "stopped"
+            return true
+          end
+        )
+      ) >> function(h)
+        return fx.join(h)
+      end,
+      0.2
+    )
+  )
+  assert_true(r.failed and r.error == "timeout", "GameSim deadline Failed")
+  assert_true(child_done == false and child_fin, "GameSim child finally")
+  assert_true(sim:now() >= 0.2 - 1e-9 and sim:now() < 0.35, "GameSim time ~ timeout")
+end
+
+
+------------------------------------------------------------
 -- fx：取消传播树 / join cancel_siblings
 ------------------------------------------------------------
 do
@@ -1973,6 +2089,29 @@ do
     end
   ), { wait = function() return true end })
   assert_true(r.ok and r.value == 2 and released[1] == "done", "Cont.bracket works")
+
+  -- 嵌套 bracket：内层 release 先于外层
+  local nest_log = {}
+  r = fx.run(Cont.bracket(
+    function() return "outer" end,
+    function(_o)
+      return Cont.bracket(
+        function() return "inner" end,
+        function(_i) return Cont.unit(42) end,
+        function(res, outcome)
+          nest_log[#nest_log + 1] = res .. ":" .. outcome.status
+          return true
+        end
+      )
+    end,
+    function(res, outcome)
+      nest_log[#nest_log + 1] = res .. ":" .. outcome.status
+      return true
+    end
+  ), { wait = function() return true end })
+  assert_true(r.ok and r.value == 42, "nested bracket value")
+  assert_eq(nest_log[1], "inner:done", "nested bracket inner first")
+  assert_eq(nest_log[2], "outer:done", "nested bracket outer second")
 
   -- 轻量追踪
   local events = {}

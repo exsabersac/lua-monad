@@ -1,6 +1,6 @@
 # Lua Monad · CPS 续延
 
-**版本 `0.2.0-eng`**（工程可用增量：效果注册表、实体绑定、资源 bracket、轻量追踪；见 [CHANGELOG](CHANGELOG.md) / [工程可用验收](docs/工程可用验收.md)）。
+**版本 `0.2.1-eng`**（工程可用：注册表 / 绑定 / bracket / 追踪 / **截止时间继承**；见 [CHANGELOG](CHANGELOG.md) / [工程可用验收](docs/工程可用验收.md)）。
 
 本仓库用纯 Lua 模拟 Haskell 风格的 Monad，**主线是 Cont（续延）与 CPS**：
 
@@ -168,7 +168,7 @@ local value = result.value  -- fx.run 返回结构化结果表
 **并行（对齐 C# `Task.WhenAll` / `WhenAny`）**：`fx.when_all` / `fx.when_any`（Cont 组合子）与 `fx.run_all` / `fx.run_any`（顶层驱动）。  
 **Fork/Join（对齐 `Task.Run` + `await`）**：`fx.fork` / `fx.join` / `fx.join_handles` — 非结构化：早启动、中间可做别的事、稍后再汇合。  
 **有限并发**：`fx.map_parallel(items, worker, {concurrency=N})` — 滑动窗口池，结果按输入顺序。  
-**超时**：`fx.with_timeout(ma, seconds)` — 竞速 deadline；超时 → `Failed("timeout")`。  
+**超时**：`fx.with_timeout(ma, seconds)` — 竞速 deadline；超时 → `Failed("timeout")`；**fork 子任务继承剩余截止**（`opts.timeout`/`deadline` 同理）。  
 **取消传播**：session `opts.cancel` 停未完成子任务；`join(..., {cancel_siblings=true})` 取消同父兄弟。  
 wait / fork 子任务由 [`src/fx_sched.lua`](src/fx_sched.lua) nursery + 时间轮并发。C# 对照表见 [异步效果同步写法](docs/异步效果同步写法.md)。
 
