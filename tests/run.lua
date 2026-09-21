@@ -1864,6 +1864,39 @@ end
 
 
 ------------------------------------------------------------
+-- 地牢突袭 demo：校验 Cont/fx/GameSim 综合栈
+------------------------------------------------------------
+do
+  package.path = "examples/dungeon_raid/?.lua;" .. package.path
+  local DungeonRaid = require("dungeon")
+
+  local r = DungeonRaid.run_focus("pause")
+  assert_true(r.ok, "dungeon focus pause")
+
+  r = DungeonRaid.run_focus("finally")
+  assert_true(r.ok, "dungeon focus finally")
+
+  r = DungeonRaid.run_focus("chests")
+  assert_true(r.ok, "dungeon focus chests")
+
+  r = DungeonRaid.run_focus("boss_interrupt")
+  assert_true(r.ok, "dungeon focus boss_interrupt")
+
+  r = DungeonRaid.run_focus("boss_timeout")
+  assert_true(r.ok, "dungeon focus boss_timeout")
+
+  -- 缩短完整通关（安静 + assert）
+  r = DungeonRaid.run({ quiet = true, assert = true, seed = 1 })
+  assert_true(r.ok and r.victory, "dungeon full victory")
+  assert_true(r.checks.pause_deferred, "dungeon pause_deferred")
+  assert_true(r.checks.mob_finally, "dungeon mob_finally")
+  assert_true(r.checks.chests_parallel, "dungeon chests_parallel")
+  assert_eq(r.boss_path, "interrupt", "dungeon boss_path interrupt")
+  assert_true(r.hp > 0 and r.rooms >= 3, "dungeon hp/rooms")
+end
+
+
+------------------------------------------------------------
 io.stdout:write("\n")
 if failures > 0 then
   io.stderr:write(failures .. " failure(s)\n")
