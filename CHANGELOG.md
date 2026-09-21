@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.17-eng — 2026-09-21
+
+### Examples
+- 新增 `examples/escort_mission/`：护卫任务综合 demo（`fx.lane` / `fx.proxy` / `fx.chan` / `fx.supervise` / `with_timeout` / GameSim pause·destroy·finally；中文 `[模拟 Xs]` 战报；`run({quiet,assert})`）
+- 新增 `examples/worker_pool/`：有界 channel 工人池（背压、`map_parallel`、脆弱工 `supervise`、`fx.lanes` 汇合；GameSim tick；中文日志）
+- `tests/run.lua` 接入两例 quiet assert smoke
+- README / [`docs/版本与路线.md`](docs/版本与路线.md) 入口与版本表更新
+
 ## 0.2.16-eng — 2026-09-21
 
 - **性能基线刷新**

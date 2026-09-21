@@ -2197,6 +2197,39 @@ do
 end
 
 
+------------------------------------------------------------
+-- 护卫任务 / 工人池 demo smoke（安静 assert）
+------------------------------------------------------------
+do
+  package.loaded["escort"] = nil
+  package.loaded["escort_world"] = nil
+  package.path = "examples/escort_mission/?.lua;" .. package.path
+  local EscortMission = require("escort")
+  local r = EscortMission.run({ quiet = true, assert = true, seed = 1 })
+  assert_true(r.ok and r.victory, "escort full victory")
+  assert_true(r.checks.pause_deferred, "escort pause_deferred")
+  assert_true(r.checks.enemy_finally, "escort enemy_finally")
+  assert_true(r.checks.hud_proxy, "escort hud_proxy")
+  assert_true(r.checks.lanes_used, "escort lanes")
+  assert_true(r.checks.checkpoint_chan and r.checks.alert_chan, "escort chan")
+  assert_true(r.checks.ambush_supervise_failed and r.checks.ambush_supervised,
+    "escort supervise")
+  assert_true(r.checks.rescue_ok, "escort rescue")
+end
+
+do
+  package.loaded["workers"] = nil
+  package.path = "examples/worker_pool/?.lua;" .. package.path
+  local WorkerPool = require("workers")
+  local r = WorkerPool.run({ quiet = true, assert = true, seed = 1 })
+  assert_true(r.ok and r.victory, "worker_pool victory")
+  assert_true(r.checks.backpressure, "worker_pool backpressure")
+  assert_true(r.checks.flaky_failed and r.checks.flaky_recovered,
+    "worker_pool supervise")
+  assert_true(r.checks.map_parallel and r.checks.all_done, "worker_pool lanes/map")
+  assert_true(r.produced >= 8 and r.results >= 8, "worker_pool counts")
+end
+
 
 ------------------------------------------------------------
 -- FrameScheduler / fx.wait_until

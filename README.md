@@ -1,6 +1,6 @@
 # Lua Monad · CPS 续延
 
-**版本 `0.2.16-eng`**（工程可用：… / wait_until / wait_real(opt-in) / chan / supervise / **lane 命名子流** / **proxy（tabProxy 轻量）** / Unity Bootstrap / abort·iquit·seq·suspend / Cont 热路径 / sync fast-path·**bench/compare/summary/alloc/doctor/trace/profile·scenarios·ci_tools**；对照 [tabMachine对照](docs/tabMachine对照.md) / [性能与工具](docs/性能与工具.md)；路线收口见 [版本与路线](docs/版本与路线.md)；见 [CHANGELOG](CHANGELOG.md) / [工程可用验收](docs/工程可用验收.md)）。
+**版本 `0.2.17-eng`**（工程可用：… / wait_until / wait_real(opt-in) / chan / supervise / **lane 命名子流** / **proxy（tabProxy 轻量）** / Unity Bootstrap / abort·iquit·seq·suspend / Cont 热路径 / sync fast-path·**bench/compare/summary/alloc/doctor/trace/profile·scenarios·ci_tools**；对照 [tabMachine对照](docs/tabMachine对照.md) / [性能与工具](docs/性能与工具.md)；路线收口见 [版本与路线](docs/版本与路线.md)；见 [CHANGELOG](CHANGELOG.md) / [工程可用验收](docs/工程可用验收.md)）。
 
 本仓库用纯 Lua 模拟 Haskell 风格的 Monad，**主线是 Cont（续延）与 CPS**：
 
@@ -234,6 +234,8 @@ lua examples/fx_with_timeout.lua
 
 # 综合演示
 lua examples/dungeon_raid/main.lua
+lua examples/escort_mission/main.lua
+lua examples/worker_pool/main.lua
 lua examples/fx_cancel_tree.lua
 lua examples/cont_catch_throw.lua
 
@@ -281,7 +283,9 @@ lua-monad/
   docs/异步效果同步写法.md
   docs/{设计说明,API,do语法,工程对接与后续,Unity对接,Lua53兼容性}.md
   examples/cont_*.lua / coro_*.lua / fx_*.lua / …
-  examples/dungeon_raid/  # 地牢突袭综合 demo（GameSim）
+  examples/dungeon_raid/     # 地牢突袭综合 demo（GameSim）
+  examples/escort_mission/  # 护卫：lanes/proxy/chan/supervise/timeout
+  examples/worker_pool/     # 工人池：有界 chan 背压 / map_parallel
   host/unity/             # Unity 对接模板（LuaGameScheduler + C# stub + Mock）
   src/game_sim.lua / scheduler.lua
   tests/run.lua
