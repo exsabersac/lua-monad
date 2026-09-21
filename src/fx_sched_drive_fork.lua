@@ -77,18 +77,7 @@ function Mod.install(S)
       target_id = h.id,
     })
     local want_cancel = not not req.cancel_siblings
-    if child.finished then
-      local st = S.apply_finished_child_to_waiter(task, child, want_cancel, nursery)
-      if st then
-        return st
-      end
-    else
-      task.parked = "join"
-      task.join_target = child.id
-      task.join_cancel_siblings = want_cancel
-      child.joiners[#child.joiners + 1] = task.id
-      return "parked"
-    end
+    return S.join_finished_or_park(nursery, task, child, want_cancel)
   end
 
   function H.join_handles(nursery, task, req)

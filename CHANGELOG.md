@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.20-eng — 2026-09-21
+
+### Docs / Refactor（行为保持，不删公共 API）
+- **fx 两层心智**：新增 [`docs/fx分层.md`](docs/fx分层.md) — **Core**（wait* / stop·abort·fail / fork+join / when_* / chan / with_timeout / supervise / register / run·start_session / with_resource / set_tracer）与 **Sugar**（lane*·proxy*·lanes / map_parallel / seq / 别名 / connect·click / wait_real / run_all·run_any·try）
+- **`fx.lua`**：`yield_unit` / `yield_join` / `yield_control`；Core/Sugar 分区头；约 **921 → 664** 行
+- **sched**：`S.join_finished_or_park`（fork / lane_join / proxy_join 共用）；lane/proxy drive 略短
+- 文档：[`核心整理说明.md`](docs/核心整理说明.md)、[`版本与路线.md`](docs/版本与路线.md)、README / API 指针；escort / worker / dungeon 不变
+
 ## 0.2.19-eng — 2026-09-21
 
 ### Refactor（行为保持）

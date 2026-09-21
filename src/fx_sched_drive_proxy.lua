@@ -24,21 +24,8 @@ function Mod.install(S)
       -- 同 session：join root
       if fl.nursery == nursery and fl.root ~= nil then
         local child = fl.root
-        if child.finished then
-          local st = S.apply_finished_child_to_waiter(task, child, want_cancel, nursery)
-          if st then
-            return st
-          end
-        else
-          task.parked = "join"
-          task.join_target = child.id
-          task.join_cancel_siblings = want_cancel
-          if stop_host then
-            task.proxy_stop_host = true
-          end
-          child.joiners[#child.joiners + 1] = task.id
-          return "parked"
-        end
+        local extra = stop_host and { proxy_stop_host = true } or nil
+        return S.join_finished_or_park(nursery, task, child, want_cancel, extra)
       elseif fl.done then
         local r = fl.result
         if r == nil then
@@ -92,21 +79,8 @@ function Mod.install(S)
         target_id = child.id,
         proxy = kind,
       })
-      if child.finished then
-        local st = S.apply_finished_child_to_waiter(task, child, want_cancel, nursery)
-        if st then
-          return st
-        end
-      else
-        task.parked = "join"
-        task.join_target = child.id
-        task.join_cancel_siblings = want_cancel
-        if stop_host then
-          task.proxy_stop_host = true
-        end
-        child.joiners[#child.joiners + 1] = task.id
-        return "parked"
-      end
+      local extra = stop_host and { proxy_stop_host = true } or nil
+      return S.join_finished_or_park(nursery, task, child, want_cancel, extra)
     end
   end
 

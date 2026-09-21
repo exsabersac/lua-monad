@@ -246,6 +246,9 @@ end
 
 教学用效果层（同步写法 / 异步效果）。依赖 Cont + Coro；**非**真实网络/UI，**非**原生 coroutine。
 
+**分层**：推荐先掌握 [fx分层 · Core](fx分层.md)；下表中 lane/proxy/map_parallel/seq/connect/click/wait_real/run_all·any/try 等为 **Sugar**（可选，API 仍导出）。
+
+
 | 函数 | 说明 |
 |------|------|
 | `fx.wait(seconds)` | yield `{ kind="wait", seconds }`；resume 后 `Cont.unit(true)`（≈ `Task.Delay`） |

@@ -60,6 +60,22 @@ function Mod.install(S)
     error("fx_sched: child finished with unexpected tag")
   end
 
+  -- 已结束 → apply；否则 park 到 child.joiners（lane/proxy/fork join 共用）
+  -- extra?: { proxy_stop_host = bool }
+  function S.join_finished_or_park(nursery, task, child, want_cancel, extra)
+    if child.finished then
+      return S.apply_finished_child_to_waiter(task, child, want_cancel, nursery)
+    end
+    task.parked = "join"
+    task.join_target = child.id
+    task.join_cancel_siblings = want_cancel
+    if extra and extra.proxy_stop_host then
+      task.proxy_stop_host = true
+    end
+    child.joiners[#child.joiners + 1] = task.id
+    return "parked"
+  end
+
   ------------------------------------------------------------
   -- kind → handler 表（各子模块往 S.drive_handlers 登记）
   ------------------------------------------------------------
