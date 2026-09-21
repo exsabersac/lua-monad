@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.21-eng — 2026-09-21
+
+### Examples / Docs
+- **按 API 示例包** [`examples/fx_api/`](examples/fx_api/)：每个 fx API 一份可运行文件 + 详细中文注释（用途/参数/与 Core·Sugar 关系/常见坑/tabMachine 一句对照）
+- `_common.lua`（GameSim / VirtualClock）、`main.lua`（全部 / `--filter` / `test` quiet）
+- 索引文档 [`docs/fx示例索引.md`](docs/fx示例索引.md)；README / `fx分层` / `异步效果同步写法` 互链
+- **`src/fx.lua`**：各 `function fx.xxx` 补充更密的中文 API 注释（参数、yield kind、resume、错误），行数仍保持薄包装量级
+- `tests/run.lua` 接入 `examples/fx_api/main.lua test` 冒烟
+
 ## 0.2.20-eng — 2026-09-21
 
 ### Docs / Refactor（行为保持，不删公共 API）

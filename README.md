@@ -1,6 +1,6 @@
 # Lua Monad · CPS 续延
 
-**版本 `0.2.20-eng`**（fx **Core/Sugar** 分层，见 [fx分层](docs/fx分层.md)；工程可用：… / wait_until / wait_real(opt-in) / chan / supervise / **lane 命名子流** / **proxy（tabProxy 轻量）** / Unity Bootstrap / abort·iquit·seq·suspend / Cont 热路径 / sync fast-path·**bench/compare/summary/alloc/doctor/trace/profile·scenarios·ci_tools**；对照 [tabMachine对照](docs/tabMachine对照.md) / [性能与工具](docs/性能与工具.md)；路线收口见 [版本与路线](docs/版本与路线.md)；见 [CHANGELOG](CHANGELOG.md) / [工程可用验收](docs/工程可用验收.md)）。
+**版本 `0.2.21-eng`**（fx **Core/Sugar** 分层，见 [fx分层](docs/fx分层.md)；工程可用：… / wait_until / wait_real(opt-in) / chan / supervise / **lane 命名子流** / **proxy（tabProxy 轻量）** / Unity Bootstrap / abort·iquit·seq·suspend / Cont 热路径 / sync fast-path·**bench/compare/summary/alloc/doctor/trace/profile·scenarios·ci_tools**；对照 [tabMachine对照](docs/tabMachine对照.md) / [性能与工具](docs/性能与工具.md)；路线收口见 [版本与路线](docs/版本与路线.md)；见 [CHANGELOG](CHANGELOG.md) / [工程可用验收](docs/工程可用验收.md)）。
 
 本仓库用纯 Lua 模拟 Haskell 风格的 Monad，**主线是 Cont（续延）与 CPS**：
 
@@ -16,12 +16,13 @@
 1. [CPS 设计与工作原理](docs/CPS设计与原理.md) — Cont、callCC、定界续延、协程三层模型  
 2. [Cont 环境组合](docs/Cont环境组合.md) — `withEnv`、属性、`AfterStep`  
 3. [异步效果同步写法](docs/异步效果同步写法.md) — `fx.wait` / `connect` / `click`；**并行** `when_all`/`when_any`；**Fork/Join** `fork`/`join`  
+   · [fx 示例索引](docs/fx示例索引.md) — **按 API** 详细注释示例 [`examples/fx_api/`](examples/fx_api/)  
 4. [tabMachine 对照](docs/tabMachine对照.md) — abort/stop、iquit、seq、suspend 映射  
 5. [工程对接与后续](docs/工程对接与后续.md) — 游戏时间 Scheduler、**GameSim**、**地牢突袭**、P0–P2；[工程可用验收](docs/工程可用验收.md)  
 6. [Unity 对接](docs/Unity对接.md) — Unity + Lua 5.3（xLua/tolua/slua）、scaled 游戏时间、主线程桥接、[`host/unity/`](host/unity/) 模板  
 7. [Lua 5.3 兼容性](docs/Lua53兼容性.md) — `__shr`、避免 5.4-only、`lua5.3 tests/run.lua`  
 8. [性能与工具](docs/性能与工具.md) — Cont 热路径、bench / flow_doctor / trace / profile；一页速查 [工具速查](docs/工具速查.md)；收口 [工具套件收口](docs/工具套件收口.md)；[`tools/README.md`](tools/README.md)  
-9. [设计说明](docs/设计说明.md) · [API 参考](docs/API.md) · [fx 分层](docs/fx分层.md) · [核心整理说明](docs/核心整理说明.md)（0.2.20）
+9. [设计说明](docs/设计说明.md) · [API 参考](docs/API.md) · [fx 分层](docs/fx分层.md) · [fx 示例索引](docs/fx示例索引.md) · [核心整理说明](docs/核心整理说明.md)（0.2.21）
 
 需要 **Lua 5.3+**（Unity / xLua / tolua / slua 多为 5.3；已在 5.3.6 验证）。在仓库根目录执行示例（脚本已设置 `package.path`）：
 
@@ -231,6 +232,12 @@ lua examples/fx_parallel_pipeline.lua
 lua examples/fx_fork_join.lua
 lua examples/fx_map_parallel.lua
 lua examples/fx_with_timeout.lua
+
+# 按 API 详细示例（推荐）
+lua examples/fx_api/main.lua
+lua examples/fx_api/wait.lua
+lua examples/fx_api/main.lua --filter lane
+lua examples/fx_api/main.lua test
 
 # 综合演示
 lua examples/dungeon_raid/main.lua

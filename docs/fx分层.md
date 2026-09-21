@@ -1,6 +1,6 @@
 # fx 分层：Core 与 Sugar
 
-版本 **0.2.20-eng**。公共 API **全部保留**；本页只划「推荐心智」与「可选糖衣」，便于少记名字、不破坏既有示例（escort / worker / dungeon）。
+版本 **0.2.21-eng**。公共 API **全部保留**；本页只划「推荐心智」与「可选糖衣」，便于少记名字、不破坏既有示例（escort / worker / dungeon）。
 
 > 无 Tab DSL。实现见 [`src/fx.lua`](../src/fx.lua)；调度见 [`核心整理说明.md`](核心整理说明.md)。
 
@@ -58,4 +58,5 @@ proxy(target)     ≈  不启动任务，只持有对已有 lane/handle/flow 的
 
 - API 表：[`API.md`](API.md)（fx 节注明 Core/Sugar）
 - 异步写法：[`异步效果同步写法.md`](异步效果同步写法.md)
+- **按 API 示例**：[`fx示例索引.md`](fx示例索引.md) → [`examples/fx_api/`](../examples/fx_api/)
 - 版本：[`版本与路线.md`](版本与路线.md) · [`CHANGELOG.md`](../CHANGELOG.md)

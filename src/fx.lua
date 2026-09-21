@@ -9,6 +9,7 @@
 -- 重叠：when_all ≈ fork+join_handles ≈ lanes；lane≈命名 fork；proxy≈外部引用 lane/handle/flow
 --
 -- 公共 API 名全部保留；本文件只做薄包装与分区，不删导出。
+-- 按 API 可运行示例：examples/fx_api/（见 docs/fx示例索引.md）
 --
 -- 依赖：cont.lua、coro.lua、fx_sched.lua（及 fx_sched_*）、fx_registry.lua、fx_flow.lua
 --
@@ -67,13 +68,15 @@ end
 -- Core · 等待
 ------------------------------------------------------------
 
--- wait : number → Cont Answer boolean
+-- wait(seconds?) → Cont Answer boolean
+--   yield kind=wait；resume=true。游戏时间（需 opts.scheduler / GameSim）；无调度器则默认 handler busy_wait。
 function fx.wait(seconds)
   seconds = seconds or 0
   return yield_unit({ kind = "wait", seconds = seconds })
 end
 
--- wait_event : name → filter? → Cont Answer payload
+-- wait_event(name, filter?) → Cont Answer payload
+--   yield kind=wait_event；resume=事件 payload。filter(payload)→bool 可选。需 listen/unlisten 宿主。
 function fx.wait_event(name, filter)
   assert(name ~= nil, "fx.wait_event: name required")
   local req = { kind = "wait_event", name = name }
@@ -83,8 +86,9 @@ function fx.wait_event(name, filter)
   return yield_unit(req)
 end
 
--- wait_until : pred → opts? → Cont Answer result
--- 需 schedule_poll（FrameScheduler / GameSim）；无 scheduler 时演示回退 busy 轮询
+-- wait_until(pred, opts?) → Cont Answer result
+--   yield kind=wait_until；pred() 真值时 resume（值为真值本身，false/nil 继续）。opts.interval≥0。
+--   需 schedule_poll（GameSim/FrameScheduler）；仅 VirtualClock 时用 schedule 自再预约。
 function fx.wait_until(pred, opts)
   assert(type(pred) == "function", "fx.wait_until: pred must be function")
   opts = opts or {}
@@ -101,7 +105,9 @@ end
 -- Core · 终态
 ------------------------------------------------------------
 
--- stop：合作式 Stopped；abort：异常 Aborted（join/when_all 不算成功）；fail：Failed
+-- stop(reason?) → Stopped（合作式；不调后续续延）
+-- abort(reason?) → Aborted（join/when_all 不算成功，向 waiter 传播）
+-- fail(err) → Failed（业务失败；可用 Cont.catch / fx.try）
 function fx.stop(reason)
   return Coro.stop(reason)
 end
@@ -120,6 +126,7 @@ end
 
 fx.CHAN_DEFAULT_CAPACITY = 1
 
+-- chan(capacity?) → channel；默认容量 CHAN_DEFAULT_CAPACITY(1)；capacity 为非负整数
 function fx.chan(capacity)
   if capacity == nil then
     capacity = fx.CHAN_DEFAULT_CAPACITY
@@ -141,21 +148,25 @@ local function assert_chan(ch, who)
     who .. ": expected fx.chan(...) channel")
 end
 
+-- send(ch, value) → Cont；yield kind=chan_send；缓冲满则挂起；resume 后发送完成
 function fx.send(ch, value)
   assert_chan(ch, "fx.send")
   return yield_unit({ kind = "chan_send", chan = ch, value = value })
 end
 
+-- recv(ch) → Cont Answer value；yield kind=chan_recv；空则挂起
 function fx.recv(ch)
   assert_chan(ch, "fx.recv")
   return yield_unit({ kind = "chan_recv", chan = ch })
 end
 
+-- close(ch) → Cont；yield kind=chan_close；关闭后后续 send 失败约定见调度器
 function fx.close(ch)
   assert_chan(ch, "fx.close")
   return yield_unit({ kind = "chan_close", chan = ch })
 end
 
+-- is_closed(ch) → bool（同步查询，不 yield）
 function fx.is_closed(ch)
   assert_chan(ch, "fx.is_closed")
   return not not ch.closed
@@ -165,27 +176,32 @@ end
 -- Core · 并行组合（when_*）与 Fork/Join
 ------------------------------------------------------------
 
+-- when_all(mas) → Cont Answer {v1,…}；yield kind=when_all；任一 Failed/Aborted 则整体失败
 function fx.when_all(mas)
   assert(type(mas) == "table", "fx.when_all: expected array of Cont Answer")
   return yield_unit({ kind = "when_all", tasks = mas })
 end
 
+-- when_any(mas) → Cont Answer {value,index}；yield kind=when_any；先 Done 者胜
 function fx.when_any(mas)
   assert(type(mas) == "table", "fx.when_any: expected array of Cont Answer")
   return yield_unit({ kind = "when_any", tasks = mas })
 end
 
+-- fork(ma) → Cont Answer handle{id}；yield kind=fork；立刻返回，不等待子完成
 function fx.fork(ma)
   assert(ma ~= nil, "fx.fork: expected Cont Answer")
   return yield_unit({ kind = "fork", task = ma })
 end
 
+-- join(handle, opts?) → Cont Answer v；yield kind=join；子 Failed/Aborted 传播。opts.cancel_siblings?
 function fx.join(handle, opts)
   assert(type(handle) == "table" and handle.id ~= nil,
     "fx.join: expected handle {id=...}")
   return yield_join("join", { handle = handle }, opts)
 end
 
+-- join_handles(handles, opts?) → Cont Answer {v…}；yield kind=join_handles；≈ when_all 的 handle 版
 function fx.join_handles(handles, opts)
   assert(type(handles) == "table", "fx.join_handles: expected array of handles")
   return yield_join("join_handles", { handles = handles }, opts)
@@ -195,6 +211,8 @@ end
 -- Core · 超时 / 监督
 ------------------------------------------------------------
 
+-- with_timeout(ma, seconds, opts?) → Cont；yield kind=with_timeout
+--   成功 resume 子值；超时 Failed(opts.on_timeout 或 "timeout") 并取消子树。时间基=scheduler。
 function fx.with_timeout(ma, seconds, opts)
   assert(ma ~= nil, "fx.with_timeout: expected Cont Answer")
   assert(type(seconds) == "number" and seconds >= 0,
@@ -212,6 +230,9 @@ function fx.with_timeout(ma, seconds, opts)
   })
 end
 
+-- supervise(ma, opts?) → Cont；yield kind=supervise
+--   opts: max_restarts=3, backoff=0, restart_if(err), on_fail(err), restart_on_stop?
+--   子 Failed 时重启；耗尽则 Failed。backoff 走游戏时间。
 function fx.supervise(ma, opts)
   assert(ma ~= nil, "fx.supervise: expected Cont Answer")
   opts = opts or {}
@@ -255,6 +276,7 @@ end
 -- Core · 注册表 / 资源 / 追踪 / 实体 / 运行
 ------------------------------------------------------------
 
+-- register(kind, handler, opts?) / unregister(kind)：自定义效果；handler(req)→值
 function fx.register(kind, handler, opts)
   return Registry.register(kind, handler, opts)
 end
@@ -265,12 +287,15 @@ end
 
 fx.registry = Registry
 
+-- with_resource(acquire, use, release) → Cont；= Cont.bracket；成功/失败/停止皆 release
+--   acquire()→Cont res；use(res)→Cont a；release(res, …)→Cont _
 function fx.with_resource(acquire, use, release)
   return Cont.bracket(acquire, use, release)
 end
 
 fx.bracket = fx.with_resource
 
+-- set_tracer(fn|nil) / get_tracer()：全局追踪钩子；session 亦可用 opts.trace
 function fx.set_tracer(fn)
   return Sched.set_tracer(fn)
 end
@@ -279,6 +304,7 @@ function fx.get_tracer()
   return Sched.get_tracer()
 end
 
+-- bind_entity(flow, entity, opts?)：实体销毁时取消 flow（见 fx_flow / GameSim）
 function fx.bind_entity(flow, entity, opts)
   return Flow.bind_entity(flow, entity, opts)
 end
@@ -346,6 +372,7 @@ local function sched_opts_from(opts, h)
   }
 end
 
+-- run_parallel(tasks, handlers?, opts?)：顶层并行；opts.mode="all"|"any"
 function fx.run_parallel(tasks, handlers, opts)
   opts = opts or {}
   local mode = opts.mode or "all"
@@ -353,6 +380,8 @@ function fx.run_parallel(tasks, handlers, opts)
   return Sched.run_parallel(tasks, h, sched_opts_from(opts, h), mode)
 end
 
+-- run(ma, handlers?, opts?) → {ok,value}|{stopped}|{failed}|{aborted}
+--   opts.scheduler/game、cancel、allow_real_time、trace、verbose_wait …
 function fx.run(ma, handlers, opts)
   opts = opts or {}
   local h = merge_handlers(handlers)
@@ -376,12 +405,14 @@ fx.busy_wait = busy_wait
 -- Sugar · 墙钟等待 / 演示效果
 ------------------------------------------------------------
 
--- wait_real：墙钟（opt-in）；默认游戏逻辑请用 wait + 游戏时间 scheduler
+-- wait_real(seconds?) → Cont Answer boolean；yield kind=wait_real（Sugar）
+--   需 schedule_real 或 opts.allow_real_time；否则 Failed{tag=wait_real_unsupported}
 function fx.wait_real(seconds)
   seconds = seconds or 0
   return yield_unit({ kind = "wait_real", seconds = seconds })
 end
 
+-- connect(host, opts?) / click(target)：演示 mock（Sugar）；工程请 register 真实 kind
 function fx.connect(host, opts)
   local req = { kind = "connect", host = host }
   if opts ~= nil then
@@ -398,6 +429,7 @@ end
 -- Sugar · 顺序 / 别名
 ------------------------------------------------------------
 
+-- seq(mas) → Cont；Sugar：Cont.chain 串联；空→unit(nil)；只要最后一步的值
 function fx.seq(mas)
   assert(type(mas) == "table", "fx.seq: expected array of Cont Answer")
   local n = #mas
@@ -420,6 +452,7 @@ fx.join_any = fx.when_any
 -- Sugar · 命名 lane（≈ tabMachine c:start("t1")；≈ 命名 fork）
 ------------------------------------------------------------
 
+-- lane(name, ma) → Cont Answer handle；yield kind=lane；≈ 命名 fork（登记 session.lanes）
 function fx.lane(name, ma)
   assert(type(name) == "string" and name ~= "",
     "fx.lane: name must be non-empty string")
@@ -427,12 +460,14 @@ function fx.lane(name, ma)
   return yield_unit({ kind = "lane", name = name, task = ma })
 end
 
+-- lane_join(name, opts?) → Cont Answer v；yield kind=lane_join
 function fx.lane_join(name, opts)
   assert(type(name) == "string" and name ~= "",
     "fx.lane_join: name must be non-empty string")
   return yield_join("lane_join", { name = name }, opts)
 end
 
+-- lane_stop(name, reason?) / lane_abort(name, reason?) → Cont Answer bool
 function fx.lane_stop(name, reason)
   assert(type(name) == "string" and name ~= "",
     "fx.lane_stop: name must be non-empty string")
@@ -445,7 +480,7 @@ function fx.lane_abort(name, reason)
   return yield_control("lane_abort", { name = name }, reason)
 end
 
--- lanes：按名启动再 join_handles（≈ when_all 的命名版）
+-- lanes(name→ma) → Cont Answer {name=v…}；≈ 命名版 when_all
 function fx.lanes(map)
   assert(type(map) == "table", "fx.lanes: expected name→Cont map")
   local names = {}
@@ -498,6 +533,8 @@ local function make_proxy(fields, opts)
   return p
 end
 
+-- proxy(name|handle|flow, opts?) → proxy 表（不 yield）；opts.stop_host_when_stop?
+--   不启动任务；仅引用。跨 session 用 flow:proxy() + 同 scheduler。
 function fx.proxy(name_or_handle, opts)
   assert(name_or_handle ~= nil, "fx.proxy: name_or_handle required")
   if type(name_or_handle) == "string" then
@@ -527,12 +564,14 @@ function fx.proxy(name_or_handle, opts)
   return make_proxy(fields, opts)
 end
 
+-- proxy_join(proxy, opts?) → Cont Answer v；yield kind=proxy_join；未知 → Failed(proxy_unknown)
 function fx.proxy_join(proxy, opts)
   assert(type(proxy) == "table" and proxy._is_proxy,
     "fx.proxy_join: expected proxy from fx.proxy / flow:proxy")
   return yield_join("proxy_join", { proxy = proxy }, opts)
 end
 
+-- proxy_stop / proxy_abort(proxy, reason?) → Cont Answer bool
 function fx.proxy_stop(proxy, reason)
   assert(type(proxy) == "table" and proxy._is_proxy,
     "fx.proxy_stop: expected proxy")
@@ -549,6 +588,8 @@ end
 -- Sugar · 有限并发池
 ------------------------------------------------------------
 
+-- map_parallel(items, worker, opts?) → Cont Answer {v…}（按下标）
+--   worker(item,i)→Cont；opts.concurrency 默认 4。内部滑动窗口 fork+join。
 function fx.map_parallel(items, worker, opts)
   assert(type(items) == "table", "fx.map_parallel: items must be an array")
   assert(type(worker) == "function", "fx.map_parallel: worker must be function(item, index) → Cont Answer")
@@ -598,6 +639,7 @@ function fx.map_parallel(items, worker, opts)
   return step(1, {}, {})
 end
 
+-- for_each_parallel(...) → Cont Answer true；丢弃 map 结果
 function fx.for_each_parallel(items, worker, opts)
   return fx.map_parallel(items, worker, opts) >> function(_vals)
     return Cont.unit(true)
@@ -618,6 +660,7 @@ local function run_parallel_mode(mode, tasks, handlers, opts)
   return fx.run_parallel(tasks, handlers, o)
 end
 
+-- run_all / run_any：run_parallel 的 mode 别名（Sugar）
 function fx.run_all(tasks, handlers, opts)
   return run_parallel_mode("all", tasks, handlers, opts)
 end
@@ -626,6 +669,7 @@ function fx.run_any(tasks, handlers, opts)
   return run_parallel_mode("any", tasks, handlers, opts)
 end
 
+-- try(ma, handlers?, opts?)：run 后按 opts.on_fail / on_stop 恢复（返回值或再 run Cont）
 function fx.try(ma, handlers, opts)
   opts = opts or {}
   local result = fx.run(ma, handlers, opts)

@@ -2232,6 +2232,35 @@ end
 
 
 ------------------------------------------------------------
+-- fx_api 按 API 示例冒烟（in-process，quiet）
+------------------------------------------------------------
+do
+  io.stdout:write("fx_api examples... ")
+  package.path = "examples/fx_api/?.lua;" .. package.path
+  -- 清掉可能残留的同名模块
+  for _, name in ipairs({
+    "_common", "main", "wait", "wait_event", "wait_until", "wait_real",
+    "stop_abort_fail", "fork_join", "when_all_any", "chan", "with_timeout",
+    "supervise", "register", "run_trace", "with_resource", "seq", "lane",
+    "proxy", "map_parallel", "connect_click",
+  }) do
+    package.loaded[name] = nil
+  end
+  local FxApi = require("main")
+  local failed = 0
+  for _, name in ipairs(FxApi.ALL) do
+    package.loaded[name] = nil
+    local ok, err = pcall(FxApi.run_one, name, true)
+    if not ok then
+      failed = failed + 1
+      io.stderr:write("fx_api/" .. name .. ": " .. tostring(err) .. "\n")
+    end
+  end
+  assert_true(failed == 0, "fx_api all examples quiet")
+end
+
+
+------------------------------------------------------------
 -- FrameScheduler / fx.wait_until
 ------------------------------------------------------------
 do
