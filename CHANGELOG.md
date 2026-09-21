@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.6-eng — 2026-09-21
+
+- **有界 channel / mailbox（P2）**：`fx.chan(n?)`（默认容量 **1**；`0`=会合）、`fx.send` / `fx.recv` / `fx.close` / `fx.is_closed`
+- Session yield：`chan_send` / `chan_recv` / `chan_close`；调度器在 peer 进展时唤醒等待方（GameSim 无 busy_wait）
+- cancel / `force_stop` 从 channel 队列摘掉 waiter → **Stopped**
+- 关闭：等待中的 send → `Failed{tag=chan_closed}`；缓冲排空后 recv 同
+- 文档：异步效果 / 工程可用验收 / API / 工程对接；示例 `game_sim_parallel` 轻量扩展
+- 测试：`fx.chan` 缓冲、跨 flow、cancel、close、容量 0
+
 ## 0.2.5-eng — 2026-09-21
 
 - **同步快路径**：`fx_sched.start_session` / `run_session` — `Coro.start` 立刻终态（未 Yield）则跳过 nursery/pump；Yielded 注入既有 session（wait/fork/timeout/cancel/finally/iquit 不变）

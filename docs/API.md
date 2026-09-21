@@ -250,6 +250,12 @@ end
 |------|------|
 | `fx.wait(seconds)` | yield `{ kind="wait", seconds }`；resume 后 `Cont.unit(true)`（≈ `Task.Delay`） |
 | `fx.wait_event(name, filter?)` | yield `{ kind="wait_event", ... }`；由 GameSim.emit / listen 兑现 |
+| `fx.wait_until(pred, opts?)` | yield `{ kind="wait_until", pred, interval? }`；FrameScheduler / GameSim poll |
+| `fx.chan(n?)` | 有界 channel（默认容量 **1**；`0`=会合）；同步返回 channel 表 |
+| `fx.send(ch, value)` | yield `{ kind="chan_send", chan, value }`；满则挂起；关闭 → Failed `chan_closed` |
+| `fx.recv(ch)` | yield `{ kind="chan_recv", chan }`；空则挂起；关闭且空 → Failed `chan_closed` |
+| `fx.close(ch)` | yield `{ kind="chan_close", chan }`；唤醒/失败等待方 |
+| `fx.is_closed(ch)` | 同步：channel 是否已关闭 |
 | `fx.connect(host, opts?)` | yield `{ kind="connect", host, opts? }`；resume 值为连接结果表 |
 | `fx.click(target)` | yield `{ kind="click", target }`；resume 值为点击结果表 |
 | `fx.stop(reason?)` | → `Coro.stop`；管道中止为 `Stopped` |
@@ -259,7 +265,7 @@ end
 | `fx.when_all(mas)` / `fx.join_all` | Cont：yield `{kind="when_all",tasks}`；resume → values 数组（≈ `Task.WhenAll`） |
 | `fx.when_any(mas)` / `fx.join_any` | Cont：yield `{kind="when_any",tasks}`；resume → `{value,index}`（≈ `Task.WhenAny`） |
 | `fx.fork(ma)` / `fx.spawn` | Cont：yield `{kind="fork",task}`；resume → handle `{id=number}`（≈ `Task.Run`） |
-| `fx.join(handle, opts?)` | Cont：yield `{kind="join",handle,cancel_siblings?}`；resume → 子 Done 值；`opts.cancel / opts.scheduler（或 opts.game）_siblings` 成功后取消同父兄弟 |
+| `fx.join(handle, opts?)` | Cont：yield `{kind="join",handle,cancel_siblings?}`；resume → 子 Done 值；`opts.cancel_siblings` 成功后取消同父兄弟 |
 | `fx.join_handles(handles, opts?)` | Cont：yield `{kind="join_handles",handles,cancel_siblings?}`；resume → values；可选 `cancel_siblings` |
 | `fx.map_parallel(items, worker, opts?)` | 有限并发：`worker(item,index)→Cont Answer a`；`opts.concurrency` 默认 4（>=1）；结果按输入顺序 |
 | `fx.for_each_parallel(items, worker, opts?)` | 同 `map_parallel`，丢弃返回值，最终 `true` |

@@ -2,7 +2,8 @@
 --
 -- 统一驱动：
 --   · run_session(root_ma) — fx.run 主路径：动态任务集（nursery），支持
---       wait / wait_until / connect/click / when_all·when_any / fork·join·join_handles / with_timeout
+--       wait / wait_until / chan_send·recv·close / connect/click /
+--       when_all·when_any / fork·join·join_handles / with_timeout
 --   · run_parallel(tasks, mode) — 顶层 WhenAll/WhenAny（内部走 session）
 --
 -- Cont Coro 编码：每个任务 Coro.start；无 Yield 的终态走同步快路径（跳过 session 循环）；
@@ -206,7 +207,115 @@ local function is_runnable(task)
   return not task.finished and not task.waiting and task.parked == nil
 end
 
--- 清除 wait / wait_event 占用的 timer / listener；迟到回调靠 cancelled 旗标忽略
+-- channel / when_flow_active 前向声明（settle 在定义前引用）
+local when_flow_active
+
+-- 从 channel 等待队列摘掉本任务
+-- mark_cancelled=true：cancel/终态路径，禁止迟到唤醒
+local function detach_chan_waiter(task, mark_cancelled)
+  local w = task._chan_waiter
+  if w == nil then
+    return
+  end
+  if mark_cancelled and w.flag then
+    w.flag.cancelled = true
+  end
+  local ch = task._chan
+  if type(ch) == "table" then
+    local function purge(q)
+      if type(q) ~= "table" then
+        return
+      end
+      for i = #q, 1, -1 do
+        if q[i] == w or (q[i] and q[i].task == task) then
+          table.remove(q, i)
+        end
+      end
+    end
+    purge(ch.send_q)
+    purge(ch.recv_q)
+  end
+  task._chan_waiter = nil
+  task._chan = nil
+end
+
+local function chan_closed_err(op)
+  return {
+    tag = "chan_closed",
+    op = op,
+    message = "channel closed",
+  }
+end
+
+-- 唤醒 / 失败 channel 等待方；同 nursery 时 _pump 可能重入（外层继续扫）
+local function settle_chan_waiter(waiter, mode, payload)
+  if waiter == nil or (waiter.flag and waiter.flag.cancelled) then
+    return
+  end
+  local task = waiter.task
+  if task == nil then
+    return
+  end
+  local peer_opts = (task.nursery and task.nursery.opts) or {}
+  when_flow_active(peer_opts, function()
+    if waiter.flag and waiter.flag.cancelled then
+      return
+    end
+    if task.finished then
+      return
+    end
+    if mode ~= "fail" and not task.waiting then
+      return
+    end
+    detach_chan_waiter(task, false)
+    task.waiting = false
+    if mode == "fail" then
+      task.answer = Coro.Failed(payload)
+    else
+      task.answer = Coro.resume(task.answer, payload)
+    end
+    if type(peer_opts._pump) == "function" then
+      peer_opts._pump()
+    end
+  end)
+end
+
+local function assert_chan_req(ch, kind)
+  assert(type(ch) == "table" and ch._tag == "fx.chan",
+    "fx_sched: " .. kind .. " requires fx.chan channel")
+  return ch
+end
+
+-- 关闭 channel：失败所有 send 等待；缓冲空则失败 recv 等待
+local function close_channel(ch)
+  if ch.closed then
+    return
+  end
+  ch.closed = true
+  while #ch.send_q > 0 do
+    local w = table.remove(ch.send_q, 1)
+    settle_chan_waiter(w, "fail", chan_closed_err("send"))
+  end
+  if #ch.buf == 0 then
+    while #ch.recv_q > 0 do
+      local w = table.remove(ch.recv_q, 1)
+      settle_chan_waiter(w, "fail", chan_closed_err("recv"))
+    end
+  end
+end
+
+-- 缓冲腾出空间后，尽量把 send 等待方灌进 buf
+local function admit_senders(ch)
+  while #ch.send_q > 0 and #ch.buf < ch.capacity do
+    local w = table.remove(ch.send_q, 1)
+    if not (w.flag and w.flag.cancelled) then
+      ch.buf[#ch.buf + 1] = w.value
+      settle_chan_waiter(w, "ok", true)
+    end
+  end
+end
+
+-- 清除 wait / wait_event / chan 占用的 timer / listener / 队列；迟到回调靠 cancelled 旗标忽略
 local function clear_task_waits(task)
   local nursery = task.nursery
   local opts = (nursery and nursery.opts) or {}
@@ -236,6 +345,7 @@ local function clear_task_waits(task)
     task.event_handle = nil
     task._unlisten = nil
   end
+  detach_chan_waiter(task, true)
   task.deadline = nil
   task.waiting = false
   task.waiting_event = false
@@ -282,7 +392,7 @@ local function propagate_child_failure(child_answer)
 end
 
 -- flow:suspend 时推迟 timer/poll 兑现；resume 时按序执行
-local function when_flow_active(opts, fn)
+when_flow_active = function(opts, fn)
   local flow = opts and opts._flow
   if flow and flow.suspended and not flow.done then
     local q = flow._deferred
@@ -1237,6 +1347,87 @@ drive_until_block = function(nursery, task)
           end
         end
       end
+
+    ------------------------------------------------------------
+    -- chan_send / chan_recv / chan_close（有界 mailbox）
+    ------------------------------------------------------------
+    elseif req.kind == "chan_send" then
+      local ch = assert_chan_req(req.chan, "chan_send")
+      local value = req.value
+      emit_trace(opts, { type = "yield", task_id = task.id, kind = "chan_send" })
+      if ch.closed then
+        task.answer = Coro.Failed(chan_closed_err("send"))
+        return "failed"
+      end
+      local delivered = false
+      -- 优先交给等待中的 recv（会合 / 直送）
+      while #ch.recv_q > 0 do
+        local w = table.remove(ch.recv_q, 1)
+        if not (w.flag and w.flag.cancelled) then
+          settle_chan_waiter(w, "ok", value)
+          task.answer = Coro.resume(task.answer, true)
+          emit_trace(opts, { type = "resume", task_id = task.id, kind = "chan_send" })
+          delivered = true
+          break
+        end
+      end
+      if not delivered then
+        if #ch.buf < ch.capacity then
+          ch.buf[#ch.buf + 1] = value
+          task.answer = Coro.resume(task.answer, true)
+          emit_trace(opts, { type = "resume", task_id = task.id, kind = "chan_send" })
+        else
+          local w = { task = task, value = value, flag = { cancelled = false } }
+          ch.send_q[#ch.send_q + 1] = w
+          task._chan_waiter = w
+          task._chan = ch
+          task.waiting = true
+          return "wait"
+        end
+      end
+
+    elseif req.kind == "chan_recv" then
+      local ch = assert_chan_req(req.chan, "chan_recv")
+      emit_trace(opts, { type = "yield", task_id = task.id, kind = "chan_recv" })
+      if #ch.buf > 0 then
+        local value = table.remove(ch.buf, 1)
+        admit_senders(ch)
+        task.answer = Coro.resume(task.answer, value)
+        emit_trace(opts, { type = "resume", task_id = task.id, kind = "chan_recv" })
+      else
+        -- 缓冲空：尝试会合 send 等待方
+        local matched = false
+        while #ch.send_q > 0 do
+          local w = table.remove(ch.send_q, 1)
+          if not (w.flag and w.flag.cancelled) then
+            local value = w.value
+            settle_chan_waiter(w, "ok", true)
+            task.answer = Coro.resume(task.answer, value)
+            emit_trace(opts, { type = "resume", task_id = task.id, kind = "chan_recv" })
+            matched = true
+            break
+          end
+        end
+        if not matched then
+          if ch.closed then
+            task.answer = Coro.Failed(chan_closed_err("recv"))
+            return "failed"
+          end
+          local w = { task = task, flag = { cancelled = false } }
+          ch.recv_q[#ch.recv_q + 1] = w
+          task._chan_waiter = w
+          task._chan = ch
+          task.waiting = true
+          return "wait"
+        end
+      end
+
+    elseif req.kind == "chan_close" then
+      local ch = assert_chan_req(req.chan, "chan_close")
+      emit_trace(opts, { type = "yield", task_id = task.id, kind = "chan_close" })
+      close_channel(ch)
+      task.answer = Coro.resume(task.answer, true)
+      emit_trace(opts, { type = "resume", task_id = task.id, kind = "chan_close" })
 
     ------------------------------------------------------------
     -- 其它效果（connect / click / 自定义 kind …）

@@ -53,4 +53,21 @@ assert(r.ok and r.value[1] == 1 and r.value[2] == 2)
 assert(sim:now() >= 0.4 - 1e-9 and sim:now() < 0.55)
 print(string.format("  join ok game_time=%.2f", sim:now()))
 
+print("=== channel mailbox on game time ===")
+sim = GameSim.new({ dt = 0.05 })
+local ch = fx.chan(1)
+local got
+local consumer = sim:start_flow(nil,
+  fx.recv(ch) >> function(v)
+    got = v
+    return Cont.unit(v)
+  end
+)
+assert(not consumer.done)
+local producer = sim:start_flow(nil, fx.send(ch, "mail"))
+sim:tick(0)
+assert(consumer.done and producer.done and got == "mail")
+assert(sim:now() == 0)
+print(string.format("  mailbox ok value=%s game_time=%.2f", tostring(got), sim:now()))
+
 print("game_sim_parallel OK")

@@ -26,6 +26,7 @@
 | 多行 `s`/`t` 标签机 | — | ❌ | 不引入 tab 代理语法；用 `withEnv` 步骤名 + `fx.seq` |
 | `tabProxy` | — | ❌ | 无代理对象模型 |
 | `xx_update` 为标签 | — | ❌ | 无每帧标签调度；用 `fx.wait_until` / `schedule_poll` |
+| notify / 邮箱协作 | `fx.chan` / `send` / `recv` | ✅ | 有界 mailbox；默认容量 1；非 tab 事件 DSL |
 | 完整 tab 树 DSL | — | ❌ | 保持 Cont/CPS；文档映射即可 |
 
 ---
@@ -59,7 +60,7 @@ stop/abort/fail/cancel:  iquit → finally
 
 - 多行 `s`/`t`、tabProxy、`xx_update` 标签语义  
 - 完整 tabMachine 事件/UI 绑定 DSL  
-- 有界 channel / 监督重启（见工程可用验收 P2）
+- 监督重启（见工程可用验收 P2；channel 已在 0.2.6-eng 落地）
 
 
 ## 性能粗测

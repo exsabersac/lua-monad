@@ -19,6 +19,7 @@
 --  10. opts.scheduler / opts.game：外部游戏时间后端；wait 走 schedule，不 busy_wait。
 --  11. fx.wait_event：由 GameSim.emit / listen 兑现。
 --  11b. fx.wait_until(pred, opts?)：每 tick/interval poll 谓词；需 FrameScheduler / GameSim.schedule_poll。
+--  11c. fx.chan / send / recv / close：有界 channel（mailbox）；yield chan_send|chan_recv|chan_close。
 --  12. fx.register / unregister：全局效果注册表（见 fx_registry）；未知 kind → Failed。
 --  13. fx.with_resource / Cont.bracket：资源获取-使用-释放（Done/Stopped/Failed 皆 release）。
 --  14. opts.trace / fx.set_tracer：轻量 flow 追踪（默认关闭）。
@@ -32,7 +33,8 @@
 -- 依赖：cont.lua、coro.lua、fx_sched.lua、fx_registry.lua、fx_flow.lua
 --
 -- 标准 kind 一览（详见 fx_registry.STANDARD_KINDS）：
---   内建：wait, wait_event, wait_until, when_all, when_any, fork, join, join_handles, with_timeout
+--   内建：wait, wait_event, wait_until, chan_send, chan_recv, chan_close,
+--         when_all, when_any, fork, join, join_handles, with_timeout
 --   演示：anim（需 register）；遗留 mock：connect, click
 
 local Cont = require("cont")
@@ -86,6 +88,73 @@ function fx.wait_until(pred, opts)
   return Coro.yield(req) >> function(result)
     return Cont.unit(result)
   end
+end
+
+------------------------------------------------------------
+-- 有界 channel / mailbox（多 flow 协作）
+------------------------------------------------------------
+
+-- 默认容量 1：贴近 mailbox / notify（可暂存一条）；缓冲队列请显式传更大 n。
+-- 容量 0：会合（rendezvous）——send 必须等到 recv。
+fx.CHAN_DEFAULT_CAPACITY = 1
+
+-- chan : n? → Channel
+-- Channel 是普通表（可跨 session / GameSim flow 共享）；不经 yield。
+function fx.chan(capacity)
+  if capacity == nil then
+    capacity = fx.CHAN_DEFAULT_CAPACITY
+  end
+  assert(type(capacity) == "number" and capacity >= 0 and capacity == math.floor(capacity),
+    "fx.chan: capacity must be a non-negative integer")
+  return {
+    _tag = "fx.chan",
+    capacity = capacity,
+    buf = {},
+    closed = false,
+    send_q = {},
+    recv_q = {},
+  }
+end
+
+local function assert_chan(ch, who)
+  assert(type(ch) == "table" and ch._tag == "fx.chan",
+    who .. ": expected fx.chan(...) channel")
+end
+
+-- send : Channel → value → Cont Answer true
+-- 缓冲未满则入队；满则挂起直至有 recv 腾出空间；已关闭 → Failed{tag="chan_closed"}。
+-- Yield: { kind="chan_send", chan=ch, value=v }
+function fx.send(ch, value)
+  assert_chan(ch, "fx.send")
+  return Coro.yield({ kind = "chan_send", chan = ch, value = value }) >> function(_ok)
+    return Cont.unit(true)
+  end
+end
+
+-- recv : Channel → Cont Answer value
+-- 缓冲有值则取出；空则挂起直至 send；已关闭且空 → Failed{tag="chan_closed"}。
+-- Yield: { kind="chan_recv", chan=ch }
+function fx.recv(ch)
+  assert_chan(ch, "fx.recv")
+  return Coro.yield({ kind = "chan_recv", chan = ch }) >> function(value)
+    return Cont.unit(value)
+  end
+end
+
+-- close : Channel → Cont Answer true
+-- 标记关闭：唤醒/失败等待中的 send；缓冲排空后 recv 得 chan_closed。
+-- Yield: { kind="chan_close", chan=ch }
+function fx.close(ch)
+  assert_chan(ch, "fx.close")
+  return Coro.yield({ kind = "chan_close", chan = ch }) >> function(_ok)
+    return Cont.unit(true)
+  end
+end
+
+-- is_closed : Channel → boolean（同步，不挂起）
+function fx.is_closed(ch)
+  assert_chan(ch, "fx.is_closed")
+  return not not ch.closed
 end
 
 -- connect : string → table? → Cont Answer connection

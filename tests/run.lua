@@ -2537,6 +2537,138 @@ end
 
 
 ------------------------------------------------------------
+-- fx：有界 channel / mailbox（P2）
+------------------------------------------------------------
+do
+  io.stdout:write("fx.chan... ")
+  local Cont = require("cont")
+  local fx = require("fx")
+  local GameSim = require("game_sim")
+  local Registry = require("fx_registry")
+
+  assert_true(fx.CHAN_DEFAULT_CAPACITY == 1, "default capacity 1")
+  assert_true(Registry.STANDARD_KINDS.chan_send ~= nil, "STANDARD_KINDS.chan_send")
+  assert_true(Registry.STANDARD_KINDS.chan_recv ~= nil, "STANDARD_KINDS.chan_recv")
+  assert_true(Registry.STANDARD_KINDS.chan_close ~= nil, "STANDARD_KINDS.chan_close")
+
+  -- fork 内 send/recv（默认可缓冲 1）
+  local ch = fx.chan()
+  local r = fx.run(
+    fx.fork(fx.send(ch, "ping") >> function()
+      return Cont.unit(true)
+    end) >> function(h)
+      return fx.recv(ch) >> function(v)
+        return fx.join(h) >> function()
+          return Cont.unit(v)
+        end
+      end
+    end
+  )
+  assert_true(r.ok and r.value == "ping", "fork send/recv")
+
+  -- 缓冲：先发后收
+  ch = fx.chan(2)
+  r = fx.run(
+    fx.send(ch, 1) >> function()
+      return fx.send(ch, 2) >> function()
+        return fx.recv(ch) >> function(a)
+          return fx.recv(ch) >> function(b)
+            return Cont.unit({ a, b })
+          end
+        end
+      end
+    end
+  )
+  assert_true(r.ok and r.value[1] == 1 and r.value[2] == 2, "buffered send then recv")
+
+  -- GameSim：满则挂起，peer recv 后唤醒（无 busy_wait）
+  local sim = GameSim.new({ dt = 0.05 })
+  ch = fx.chan(1)
+  local wall0 = os.clock()
+  local sdone, vals
+  local fs = sim:start_flow(nil,
+    fx.send(ch, "A") >> function()
+      return fx.send(ch, "B") >> function()
+        sdone = true
+        return Cont.unit(true)
+      end
+    end
+  )
+  sim:tick(0)
+  assert_true(not fs.done and #ch.buf == 1 and #ch.send_q == 1, "send blocks when full")
+  local fr = sim:start_flow(nil,
+    fx.recv(ch) >> function(a)
+      return fx.recv(ch) >> function(b)
+        vals = { a, b }
+        return Cont.unit(true)
+      end
+    end
+  )
+  sim:tick(0)
+  assert_true(fs.done and fr.done and sdone, "peer unblocks")
+  assert_true(vals[1] == "A" and vals[2] == "B", "GameSim order")
+  assert_true(os.clock() - wall0 < 0.05, "no busy_wait on chan")
+
+  -- 跨 flow
+  sim = GameSim.new({ dt = 0.05 })
+  ch = fx.chan(1)
+  local got
+  local frecv = sim:start_flow(nil, fx.recv(ch) >> function(v)
+    got = v
+    return Cont.unit(v)
+  end)
+  assert_true(not frecv.done, "cross-flow recv pending")
+  local fsend = sim:start_flow(nil, fx.send(ch, 99))
+  sim:tick(0)
+  assert_true(frecv.done and fsend.done and got == 99, "cross-flow deliver")
+
+  -- cancel 清除 waiter → Stopped
+  sim = GameSim.new({ dt = 0.05 })
+  ch = fx.chan(1)
+  local flow = sim:start_flow(nil, fx.recv(ch))
+  assert_true(#ch.recv_q == 1, "recv queued")
+  flow.cancel("cancelled")
+  assert_true(flow.done and flow.result.stopped, "cancel Stopped")
+  assert_eq(#ch.recv_q, 0, "cancel clears recv_q")
+
+  sim = GameSim.new({ dt = 0.05 })
+  ch = fx.chan(0)
+  flow = sim:start_flow(nil, fx.send(ch, "x"))
+  assert_true(#ch.send_q == 1, "send queued cap0")
+  flow.cancel()
+  assert_true(flow.result.stopped and #ch.send_q == 0, "cancel clears send_q")
+
+  -- close：等待 recv → Failed chan_closed；缓冲仍可读
+  sim = GameSim.new({ dt = 0.05 })
+  ch = fx.chan(2)
+  r = sim:run(fx.send(ch, "keep") >> function()
+    return fx.close(ch)
+  end)
+  assert_true(r.ok and fx.is_closed(ch), "close ok")
+  r = sim:run(fx.recv(ch))
+  assert_true(r.ok and r.value == "keep", "recv after close drains buf")
+  r = sim:run(fx.recv(ch))
+  assert_true(r.failed and r.error.tag == "chan_closed", "recv empty closed")
+  r = sim:run(fx.send(ch, 1))
+  assert_true(r.failed and r.error.tag == "chan_closed", "send on closed")
+
+  -- 容量 0 会合
+  sim = GameSim.new({ dt = 0.05 })
+  ch = fx.chan(0)
+  local rv
+  frecv = sim:start_flow(nil, fx.recv(ch) >> function(v)
+    rv = v
+    return Cont.unit(v)
+  end)
+  fsend = sim:start_flow(nil, fx.send(ch, "Z"))
+  sim:tick(0)
+  assert_true(frecv.done and fsend.done and rv == "Z" and #ch.buf == 0, "rendezvous cap0")
+
+  io.stdout:write("ok\n")
+end
+
+
+------------------------------------------------------------
 io.stdout:write("\n")
 if failures > 0 then
   io.stderr:write(failures .. " failure(s)\n")

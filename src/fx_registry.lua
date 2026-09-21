@@ -4,7 +4,8 @@
 -- Session（fx_sched）在解析「非内建」kind 时查本表（再经 handlers 合并覆盖）。
 --
 -- 内建由调度器直接处理（不必 register）：
---   wait, wait_event, wait_until, when_all, when_any, fork, join, join_handles, with_timeout
+--   wait, wait_event, wait_until, chan_send, chan_recv, chan_close,
+--   when_all, when_any, fork, join, join_handles, with_timeout
 -- 演示 / 遗留 mock（默认 handlers 或示例 register）：
 --   connect, click  — 教学 mock
 --   anim           — GameSim / 示例自定义异步演示
@@ -29,6 +30,18 @@ M.STANDARD_KINDS = {
   wait_until = {
     role = "builtin",
     desc = "每 tick/interval poll pred()；真值 resume；需 FrameScheduler/GameSim.schedule_poll",
+  },
+  chan_send = {
+    role = "builtin",
+    desc = "有界 channel 发送；满则挂起；关闭 → Failed{tag=chan_closed}",
+  },
+  chan_recv = {
+    role = "builtin",
+    desc = "有界 channel 接收；空则挂起；关闭且空 → Failed{tag=chan_closed}",
+  },
+  chan_close = {
+    role = "builtin",
+    desc = "关闭 channel；失败等待中的 send；排空后 recv 得 chan_closed",
   },
   when_all = { role = "builtin", desc = "结构化并行：全部 Done 后 resume values 数组" },
   when_any = { role = "builtin", desc = "结构化并行：首个 Done 胜出，其余取消" },
