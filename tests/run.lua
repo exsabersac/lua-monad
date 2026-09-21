@@ -2669,6 +2669,235 @@ end
 
 
 ------------------------------------------------------------
+-- fx：supervise 监督式重启（P2）
+------------------------------------------------------------
+do
+  io.stdout:write("fx.supervise... ")
+  local Cont = require("cont")
+  local fx = require("fx")
+  local Scheduler = require("scheduler")
+  local Registry = require("fx_registry")
+  local GameSim = require("game_sim")
+
+  assert_true(Registry.STANDARD_KINDS.supervise ~= nil, "STANDARD_KINDS.supervise")
+  assert_true(type(fx.supervise) == "function", "fx.supervise exists")
+
+  -- 首次成功
+  local r = fx.run(fx.supervise(Cont.unit(42)))
+  assert_true(r.ok and r.value == 42, "supervise first-try ok")
+
+  -- Failed 后重启直至成功（默认 max_restarts=3）
+  local n = 0
+  local child = Cont.unit(nil) >> function()
+    n = n + 1
+    if n < 3 then
+      return fx.fail("e" .. n)
+    end
+    return Cont.unit("ok" .. n)
+  end
+  r = fx.run(fx.supervise(child))
+  assert_true(r.ok and r.value == "ok3" and n == 3, "supervise restart then ok")
+
+  -- 超过 max_restarts → 表面 Failed
+  n = 0
+  child = Cont.unit(nil) >> function()
+    n = n + 1
+    return fx.fail("boom")
+  end
+  r = fx.run(fx.supervise(child, { max_restarts = 2 }))
+  assert_true(r.failed and r.error == "boom" and n == 3,
+    "max_restarts=2 → 3 attempts then Failed")
+
+  -- max_restarts=0：不重启
+  n = 0
+  child = Cont.unit(nil) >> function()
+    n = n + 1
+    return fx.fail("once")
+  end
+  r = fx.run(fx.supervise(child, { max_restarts = 0 }))
+  assert_true(r.failed and n == 1, "max_restarts=0 no restart")
+
+  -- restart_if / on_fail 抑制重启
+  n = 0
+  child = Cont.unit(nil) >> function()
+    n = n + 1
+    return fx.fail("nope")
+  end
+  r = fx.run(fx.supervise(child, {
+    max_restarts = 5,
+    restart_if = function() return false end,
+  }))
+  assert_true(r.failed and n == 1, "restart_if false")
+
+  local seen = {}
+  n = 0
+  child = Cont.unit(nil) >> function()
+    n = n + 1
+    return fx.fail("e")
+  end
+  r = fx.run(fx.supervise(child, {
+    max_restarts = 5,
+    on_fail = function(err)
+      seen[#seen + 1] = err
+      return false
+    end,
+  }))
+  assert_true(r.failed and n == 1 and seen[1] == "e", "on_fail false")
+
+  -- Stopped 默认不重启；restart_on_stop 可开
+  n = 0
+  child = Cont.unit(nil) >> function()
+    n = n + 1
+    return fx.stop("bye")
+  end
+  r = fx.run(fx.supervise(child, { max_restarts = 5 }))
+  assert_true(r.stopped and n == 1, "Stopped no restart by default")
+
+  n = 0
+  child = Cont.unit(nil) >> function()
+    n = n + 1
+    if n < 2 then
+      return fx.stop("retry-me")
+    end
+    return Cont.unit("after-stop")
+  end
+  r = fx.run(fx.supervise(child, { max_restarts = 3, restart_on_stop = true }))
+  assert_true(r.ok and r.value == "after-stop" and n == 2, "restart_on_stop")
+
+  -- Aborted 不重启
+  n = 0
+  child = Cont.unit(nil) >> function()
+    n = n + 1
+    return fx.abort("ab")
+  end
+  r = fx.run(fx.supervise(child, { max_restarts = 5 }))
+  assert_true(r.aborted and n == 1, "Aborted no restart")
+
+  -- 游戏时间 backoff（VirtualClock）
+  local clock = Scheduler.VirtualClock()
+  n = 0
+  child = Cont.unit(nil) >> function()
+    n = n + 1
+    if n < 3 then
+      return fx.fail("x")
+    end
+    return Cont.unit(n)
+  end
+  local flow = fx.sched.start_session(
+    fx.supervise(child, { max_restarts = 3, backoff = 0.5 }),
+    {},
+    { scheduler = clock }
+  )
+  assert_true(not flow.done and n == 1, "backoff pending after fail")
+  clock.advance(0.4)
+  assert_true(not flow.done and n == 1, "backoff not due yet")
+  clock.advance(0.2)
+  assert_true(n == 2, "second attempt after backoff")
+  clock.advance(1.0)
+  assert_true(flow.done and flow.result.ok and flow.result.value == 3,
+    "backoff supervise completes")
+
+  -- cancel 当前子：不重启
+  n = 0
+  child = Cont.unit(nil) >> function()
+    n = n + 1
+    return fx.wait(10)
+  end
+  clock = Scheduler.VirtualClock()
+  flow = fx.sched.start_session(
+    fx.supervise(child, { max_restarts = 5 }),
+    {},
+    { scheduler = clock }
+  )
+  flow.cancel("cancelled")
+  assert_true(flow.result.stopped and n == 1, "cancel child no restart")
+
+  -- cancel 在 backoff 期间：不启下一轮
+  local starts = 0
+  child = Cont.unit(nil) >> function()
+    starts = starts + 1
+    return fx.fail("x")
+  end
+  clock = Scheduler.VirtualClock()
+  flow = fx.sched.start_session(
+    fx.supervise(child, { max_restarts = 5, backoff = 1.0 }),
+    {},
+    { scheduler = clock }
+  )
+  assert_true(starts == 1 and not flow.done, "in backoff")
+  flow.cancel("cancelled")
+  assert_true(flow.result.stopped, "cancel during backoff Stopped")
+  clock.advance(2.0)
+  assert_eq(starts, 1, "no restart after cancel during backoff")
+
+  -- finally / iquit：每次 Failed 尝试都跑；成功跳过 iquit
+  local cleaned = 0
+  n = 0
+  child = Cont.finally(
+    Cont.unit(nil) >> function()
+      n = n + 1
+      if n < 2 then
+        return fx.fail("f")
+      end
+      return Cont.unit("S")
+    end,
+    function()
+      cleaned = cleaned + 1
+      return true
+    end
+  )
+  r = fx.run(fx.supervise(child, { max_restarts = 3 }))
+  assert_true(r.ok and r.value == "S" and cleaned == 2 and n == 2,
+    "finally each attempt")
+
+  local order = {}
+  n = 0
+  child = Cont.iquit_finally(
+    Cont.unit(nil) >> function()
+      n = n + 1
+      if n < 2 then
+        return fx.fail("z")
+      end
+      return Cont.unit("Y")
+    end,
+    function()
+      order[#order + 1] = "iquit"
+      return true
+    end,
+    function()
+      order[#order + 1] = "finally"
+      return true
+    end
+  )
+  r = fx.run(fx.supervise(child, { max_restarts = 3 }))
+  assert_true(r.ok and r.value == "Y", "iquit_finally value")
+  assert_eq(table.concat(order, ","), "iquit,finally,finally",
+    "iquit then finally on fail; finally only on success")
+
+  -- GameSim：supervise + backoff 游戏时间
+  local sim = GameSim.new({ dt = 0.1 })
+  n = 0
+  child = Cont.unit(nil) >> function()
+    n = n + 1
+    if n < 2 then
+      return fx.fail("retry")
+    end
+    return Cont.unit("gs")
+  end
+  flow = sim:start_flow(nil, fx.supervise(child, { max_restarts = 3, backoff = 0.3 }))
+  assert_true(not flow.done and n == 1, "GameSim backoff pending")
+  sim:tick(0.2)
+  assert_true(not flow.done and n == 1, "GameSim before backoff due")
+  sim:tick(0.2)
+  assert_true(flow.done and flow.result.ok and flow.result.value == "gs" and n == 2,
+    "GameSim supervise ok")
+
+  io.stdout:write("ok\n")
+end
+
+
+
+------------------------------------------------------------
 io.stdout:write("\n")
 if failures > 0 then
   io.stderr:write(failures .. " failure(s)\n")

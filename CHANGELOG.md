@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.7-eng — 2026-09-21
+
+- **监督式重启（P2）**：`fx.supervise(child_ma, opts?)`
+  - `opts.max_restarts`（默认 **3**）、`opts.backoff`（默认 **0**，游戏秒，经 scheduler wait）
+  - `opts.restart_if(err)` / `opts.on_fail(err)`（返回 `false` 则不再重启）
+  - 默认仅 **Failed** 重启；`opts.restart_on_stop` 可选对 Stopped（非 cancelled）重启；**Aborted** 不重启
+  - cancel / force_stop supervise：取消当前子与 backoff，**不再重启**
+  - 与 finally / iquit 对齐：每次子尝试独立跑生命周期
+- Session yield：`supervise`；`fx_registry.STANDARD_KINDS.supervise`
+- 文档：异步效果 / 工程可用验收 / API / 工程对接；测试覆盖 VirtualClock + GameSim
+
 ## 0.2.6-eng — 2026-09-21
 
 - **有界 channel / mailbox（P2）**：`fx.chan(n?)`（默认容量 **1**；`0`=会合）、`fx.send` / `fx.recv` / `fx.close` / `fx.is_closed`

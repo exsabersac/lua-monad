@@ -3,7 +3,7 @@
 -- 统一驱动：
 --   · run_session(root_ma) — fx.run 主路径：动态任务集（nursery），支持
 --       wait / wait_until / chan_send·recv·close / connect/click /
---       when_all·when_any / fork·join·join_handles / with_timeout
+--       when_all·when_any / fork·join·join_handles / with_timeout / supervise
 --   · run_parallel(tasks, mode) — 顶层 WhenAll/WhenAny（内部走 session）
 --
 -- Cont Coro 编码：每个任务 Coro.start；无 Yield 的终态走同步快路径（跳过 session 循环）；
@@ -15,6 +15,7 @@
 -- 截止时间：opts.deadline / opts.timeout，以及 with_timeout，向下传播到 fork 子任务；
 -- 父 deadline 触发时递归 Stopped 未完成后代（iquit/finally 经 force_stop → Yielded.abort）。
 -- Coro.Aborted（fx.abort）：join / when_all / when_any 向 waiter 传播 Aborted（不算成功值）。
+-- supervise：子 Failed（可选 Stopped）按 max_restarts/backoff 重启；cancel 当前子且不重启。
 -- flow:suspend() / flow:resume()：挂起本 flow 的 wait 兑现（timer/poll 回调推迟到 resume）。
 
 local Coro = require("coro")
@@ -315,6 +316,9 @@ local function admit_senders(ch)
   end
 end
 
+-- 前向：supervise backoff 清理（定义在 clear_task_waits / force_stop 之后）
+local clear_supervise_backoff
+
 -- 清除 wait / wait_event / chan 占用的 timer / listener / 队列；迟到回调靠 cancelled 旗标忽略
 local function clear_task_waits(task)
   local nursery = task.nursery
@@ -346,6 +350,10 @@ local function clear_task_waits(task)
     task._unlisten = nil
   end
   detach_chan_waiter(task, true)
+  -- supervise 等待 backoff 时，父 parked；cancel 须拆掉 scheduler handle
+  if task.waiting_group and task.waiting_group.mode == "supervise" then
+    clear_supervise_backoff(task.waiting_group, opts, task.nursery)
+  end
   task.deadline = nil
   task.waiting = false
   task.waiting_event = false
@@ -363,6 +371,35 @@ end
 -- 经 with_iquit/with_finally.abort 停任务，保证 iquit→finally 执行
 local function force_stop_task_answer(answer, reason)
   return Coro.force_stop(answer, reason or "cancelled")
+end
+
+-- supervise backoff 清理：scheduler handle（遗留）+ wait 任务
+clear_supervise_backoff = function(group, opts, nursery)
+  if group == nil then
+    return
+  end
+  if group._backoff_flag then
+    group._backoff_flag.cancelled = true
+    group._backoff_flag = nil
+  end
+  if group._backoff_handle ~= nil then
+    local scheduler = opts and opts.scheduler
+    if scheduler and type(scheduler.cancel) == "function" then
+      scheduler.cancel(group._backoff_handle)
+    end
+    group._backoff_handle = nil
+  end
+  if group._backoff_task_id ~= nil and nursery ~= nil then
+    local t = nursery.tasks[group._backoff_task_id]
+    group._backoff_task_id = nil
+    if t and not t.finished then
+      clear_task_waits(t)
+      t.answer = force_stop_task_answer(t.answer, "cancelled")
+      t._supervise_backoff_group = nil
+      mark_finished(t)
+      t._terminal_handled = true
+    end
+  end
 end
 
 -- Answer → 调度器用的终态标签
@@ -442,6 +479,8 @@ local on_task_terminal
 local settle_group
 local try_complete_joins
 local cancel_descendants
+local try_supervise_after_child
+local spawn_supervise_child
 
 -- 取消 ancestor 的所有未完成后代（不含 ancestor 自身）；经 force_stop 跑 finally
 cancel_descendants = function(nursery, ancestor_id, reason)
@@ -604,17 +643,33 @@ settle_group = function(nursery, group, status, child)
       parent.answer = Coro.resume(parent.answer, child.result)
       cancel_siblings(nursery, group, child.id)
     end
+  elseif status == "done" and group.mode == "supervise" then
+    clear_supervise_backoff(group, nursery.opts, nursery)
+    parent.waiting_group = nil
+    parent.answer = Coro.resume(parent.answer, child.result)
   elseif status == "failed" then
+    if group.mode == "supervise" then
+      clear_supervise_backoff(group, nursery.opts, nursery)
+      parent.waiting_group = nil
+    end
     parent.answer = Coro.Failed(child.answer.error)
     parent.fail_index = child.group_pos
     cancel_siblings(nursery, group, child.id)
     on_task_terminal(nursery, parent, "failed")
   elseif status == "stopped" then
+    if group.mode == "supervise" then
+      clear_supervise_backoff(group, nursery.opts, nursery)
+      parent.waiting_group = nil
+    end
     parent.answer = Coro.Stopped(child.answer.reason or "cancelled")
     parent.fail_index = child.group_pos
     cancel_siblings(nursery, group, child.id)
     on_task_terminal(nursery, parent, "stopped")
   elseif status == "aborted" then
+    if group.mode == "supervise" then
+      clear_supervise_backoff(group, nursery.opts, nursery)
+      parent.waiting_group = nil
+    end
     parent.answer = Coro.Aborted(child.answer.reason or "aborted")
     parent.fail_index = child.group_pos
     cancel_siblings(nursery, group, child.id)
@@ -634,10 +689,27 @@ on_task_terminal = function(nursery, task, status)
   end
   mark_finished(task)
 
-  -- 结构化 when_all / when_any
+  -- supervise backoff 等待任务（非 group 子）：到期后启下一轮
+  if task._supervise_backoff_group then
+    local g = task._supervise_backoff_group
+    task._supervise_backoff_group = nil
+    if g._backoff_task_id == task.id then
+      g._backoff_task_id = nil
+    end
+    if status == "done" and not g.settled then
+      spawn_supervise_child(nursery, g)
+    end
+    -- Stopped/Failed of backoff：cancel 路径，不再重启
+    try_complete_joins(nursery, task, status)
+    return
+  end
+
+  -- 结构化 when_all / when_any / timeout / supervise
   local group = task.group_ref
   if group and not group.settled then
-    if status == "done" then
+    if group.mode == "supervise" then
+      try_supervise_after_child(nursery, group, task, status)
+    elseif status == "done" then
       group.values[task.group_pos] = task.result
       group.done_count = group.done_count + 1
       if group.mode == "any" or group.mode == "timeout" then
@@ -901,6 +973,161 @@ local function start_timeout_race(nursery, parent, req)
   return "parked"
 end
 
+-- 启动 supervise：跑 child；Failed（可选 Stopped）时重启
+local function start_supervise(nursery, parent, req)
+  local ma = req.task
+  assert(ma ~= nil, "fx_sched: supervise requires .task")
+  local max_restarts = req.max_restarts
+  if max_restarts == nil then
+    max_restarts = 3
+  end
+  local backoff = req.backoff or 0
+  local group = {
+    parent_id = parent.id,
+    mode = "supervise",
+    child_ids = {},
+    values = {},
+    done_count = 0,
+    n = 0,
+    settled = false,
+    ma = ma,
+    max_restarts = max_restarts,
+    backoff = backoff,
+    restart_if = req.restart_if,
+    on_fail = req.on_fail,
+    restart_on_stop = not not req.restart_on_stop,
+    restarts = 0,
+    current_child_id = nil,
+  }
+  parent.parked = "group"
+  parent.waiting_group = group
+  spawn_supervise_child(nursery, group)
+  return "parked"
+end
+
+spawn_supervise_child = function(nursery, group)
+  if group.settled then
+    return
+  end
+  local parent = nursery.tasks[group.parent_id]
+  if not parent or parent.finished then
+    return
+  end
+  local opts = nursery.opts or {}
+  if is_cancelled(opts.cancel) then
+    settle_group(nursery, group, "stopped", {
+      id = 0,
+      group_pos = 0,
+      answer = Coro.Stopped("cancelled"),
+    })
+    return
+  end
+  local child = alloc_task(nursery, group.ma)
+  child.group_ref = group
+  child.group_pos = #group.child_ids + 1
+  child.parent_id = parent.id
+  inherit_deadline(child, parent)
+  group.child_ids[#group.child_ids + 1] = child.id
+  group.current_child_id = child.id
+  group.n = #group.child_ids
+  emit_trace(opts, {
+    type = "supervise_start",
+    task_id = parent.id,
+    child_id = child.id,
+    attempt = group.restarts + 1,
+    restarts = group.restarts,
+  })
+end
+
+local function supervise_should_restart(group, child, status)
+  if group.restarts >= group.max_restarts then
+    return false
+  end
+  if status == "failed" then
+    local err = child.answer and child.answer.error
+    if type(group.restart_if) == "function" then
+      local ok, allow = pcall(group.restart_if, err)
+      if not ok or not allow then
+        return false
+      end
+    end
+    if type(group.on_fail) == "function" then
+      local ok, ret = pcall(group.on_fail, err)
+      if ok and ret == false then
+        return false
+      end
+    end
+    return true
+  end
+  if status == "stopped" and group.restart_on_stop then
+    local reason = child.answer and child.answer.reason
+    if reason == "cancelled" then
+      return false
+    end
+    return true
+  end
+  return false
+end
+
+local function schedule_supervise_restart(nursery, group)
+  local parent = nursery.tasks[group.parent_id]
+  if not parent or parent.finished or group.settled then
+    return
+  end
+  local opts = nursery.opts or {}
+  local backoff = group.backoff or 0
+
+  if backoff <= 0 then
+    if is_cancelled(opts.cancel) then
+      settle_group(nursery, group, "stopped", {
+        id = 0,
+        group_pos = 0,
+        answer = Coro.Stopped("cancelled"),
+      })
+      return
+    end
+    spawn_supervise_child(nursery, group)
+    return
+  end
+
+  -- backoff：用 wait 任务（有 scheduler 时走游戏时间 schedule；否则时间轮/busy）
+  -- 必须是 nursery 任务，否则 pump 会把「仅 parked 的 supervise」当成 deadlock
+  local timer_ma = Coro.yield({ kind = "wait", seconds = backoff }) >> function(_)
+    return Cont.unit(true)
+  end
+  local timer = alloc_task(nursery, timer_ma)
+  timer.parent_id = parent.id
+  timer._supervise_backoff_group = group
+  group._backoff_task_id = timer.id
+end
+
+try_supervise_after_child = function(nursery, group, child, status)
+  local parent = nursery.tasks[group.parent_id]
+  if not parent or parent.finished then
+    return
+  end
+  if status == "done" then
+    settle_group(nursery, group, "done", child)
+    return
+  end
+  if supervise_should_restart(group, child, status) then
+    group.restarts = group.restarts + 1
+    emit_trace(nursery.opts, {
+      type = "supervise_restart",
+      task_id = parent.id,
+      child_id = child.id,
+      restarts = group.restarts,
+      max_restarts = group.max_restarts,
+      status = status,
+      error = child.answer and child.answer.error,
+      reason = child.answer and child.answer.reason,
+    })
+    schedule_supervise_restart(nursery, group)
+    return
+  end
+  settle_group(nursery, group, status, child)
+end
+
 drive_until_block = function(nursery, task)
   local handlers = nursery.handlers
   local opts = nursery.opts
@@ -988,6 +1215,16 @@ drive_until_block = function(nursery, task)
     ------------------------------------------------------------
     elseif req.kind == "with_timeout" then
       local st = start_timeout_race(nursery, task, req)
+      if st == "parked" then
+        return "parked"
+      end
+
+    ------------------------------------------------------------
+    -- supervise：子失败时按策略重启
+    ------------------------------------------------------------
+    elseif req.kind == "supervise" then
+      emit_trace(opts, { type = "yield", task_id = task.id, kind = "supervise" })
+      local st = start_supervise(nursery, task, req)
       if st == "parked" then
         return "parked"
       end

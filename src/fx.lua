@@ -13,6 +13,8 @@
 --   6. fx.map_parallel：有限并发池（滑动窗口 fork/join，结果按输入顺序）。
 --   7. fx.with_timeout：与 wait(deadline) 竞速；超时 → Failed("timeout")（可自定义）。
 --      截止时间向下传播到 fork 子任务；子可再用更紧的 with_timeout。
+--   7b. fx.supervise：子 Failed（可选 Stopped）时按 max_restarts / backoff 重启；
+--       cancel supervise 取消当前子且不再重启；backoff 走游戏时间 scheduler。
 --   8. 取消传播树：session cancel 停止未完成子任务；join 可选 cancel_siblings。
 --      父 deadline 触发时递归 Stopped 未完成后代（finally 经 force_stop）。
 --   9. 这不是真实网络/UI；默认 handlers 只是 mock，便于演示与测试。
@@ -34,7 +36,7 @@
 --
 -- 标准 kind 一览（详见 fx_registry.STANDARD_KINDS）：
 --   内建：wait, wait_event, wait_until, chan_send, chan_recv, chan_close,
---         when_all, when_any, fork, join, join_handles, with_timeout
+--         when_all, when_any, fork, join, join_handles, with_timeout, supervise
 --   演示：anim（需 register）；遗留 mock：connect, click
 
 local Cont = require("cont")
@@ -405,6 +407,62 @@ function fx.with_timeout(ma, seconds, opts)
 end
 
 ------------------------------------------------------------
+-- 监督式重启（supervise）
+------------------------------------------------------------
+
+-- supervise : Cont Answer a → opts? → Cont Answer a
+-- 跑 child；Failed（可选 Stopped）时重启，直至成功或超过 max_restarts。
+-- opts:
+--   max_restarts（默认 3）：失败后最多再启次数（总尝试 = 1 + max_restarts）
+--   backoff（默认 0）：重启前等待的游戏秒（有 scheduler 时走 schedule）
+--   restart_if(err) → bool：是否允许本次重启（默认 true）
+--   on_fail(err)：每次失败回调；若显式返回 false 则不再重启
+--   restart_on_stop（默认 false）：Stopped 且 reason≠cancelled 时也重启
+-- Aborted 默认不重启，直接传播。
+-- Cancel / force_stop supervise：取消当前子（及 backoff timer），不再重启。
+-- Yield: { kind="supervise", task=ma, max_restarts, backoff, ... }
+function fx.supervise(ma, opts)
+  assert(ma ~= nil, "fx.supervise: expected Cont Answer")
+  opts = opts or {}
+  local max_restarts = opts.max_restarts
+  if max_restarts == nil then
+    max_restarts = 3
+  end
+  assert(type(max_restarts) == "number" and max_restarts >= 0 and max_restarts == math.floor(max_restarts),
+    "fx.supervise: opts.max_restarts must be a non-negative integer")
+  local backoff = opts.backoff
+  if backoff == nil then
+    backoff = 0
+  end
+  assert(type(backoff) == "number" and backoff >= 0,
+    "fx.supervise: opts.backoff must be >= 0")
+  if opts.restart_if ~= nil then
+    assert(type(opts.restart_if) == "function", "fx.supervise: opts.restart_if must be function")
+  end
+  if opts.on_fail ~= nil then
+    assert(type(opts.on_fail) == "function", "fx.supervise: opts.on_fail must be function")
+  end
+  local req = {
+    kind = "supervise",
+    task = ma,
+    max_restarts = max_restarts,
+    backoff = backoff,
+  }
+  if opts.restart_if ~= nil then
+    req.restart_if = opts.restart_if
+  end
+  if opts.on_fail ~= nil then
+    req.on_fail = opts.on_fail
+  end
+  if opts.restart_on_stop then
+    req.restart_on_stop = true
+  end
+  return Coro.yield(req) >> function(value)
+    return Cont.unit(value)
+  end
+end
+
+------------------------------------------------------------
 -- 效果注册表（全局）
 ------------------------------------------------------------
 
@@ -470,7 +528,7 @@ end
 -- 默认处理器：打印日志 + mock 成功结果
 -- kind="stop" 可选：若业务误用 Coro.yield{kind="stop"}，handlers 可识别；
 -- 正常请用 fx.stop（直接 Stopped，不经过 handler）。
--- when_all / when_any / fork / join / with_timeout 由 session 调度器处理，不经本表。
+-- when_all / when_any / fork / join / with_timeout / supervise 由 session 调度器处理，不经本表。
 local default_handlers = {
   wait = function(req)
     local secs = req.seconds or 0

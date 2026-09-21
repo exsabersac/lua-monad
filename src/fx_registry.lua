@@ -5,7 +5,7 @@
 --
 -- 内建由调度器直接处理（不必 register）：
 --   wait, wait_event, wait_until, chan_send, chan_recv, chan_close,
---   when_all, when_any, fork, join, join_handles, with_timeout
+--   when_all, when_any, fork, join, join_handles, with_timeout, supervise
 -- 演示 / 遗留 mock（默认 handlers 或示例 register）：
 --   connect, click  — 教学 mock
 --   anim           — GameSim / 示例自定义异步演示
@@ -49,6 +49,10 @@ M.STANDARD_KINDS = {
   join = { role = "builtin", desc = "等待单个 fork handle" },
   join_handles = { role = "builtin", desc = "按序等待多个 fork handle" },
   with_timeout = { role = "builtin", desc = "与 wait(deadline) 竞速；超时 → Failed；截止向下传播到 fork" },
+  supervise = {
+    role = "builtin",
+    desc = "监督重启：子 Failed（可选 Stopped）时按 max_restarts/backoff 再启；cancel 不重启",
+  },
   anim = {
     role = "demo",
     desc = "演示用异步动画；工程侧自行 register(async=true)",
