@@ -1,6 +1,6 @@
 # Lua Monad · CPS 续延
 
-**版本 `0.2.18-eng`**（`fx_sched` 拆分整理；工程可用：… / wait_until / wait_real(opt-in) / chan / supervise / **lane 命名子流** / **proxy（tabProxy 轻量）** / Unity Bootstrap / abort·iquit·seq·suspend / Cont 热路径 / sync fast-path·**bench/compare/summary/alloc/doctor/trace/profile·scenarios·ci_tools**；对照 [tabMachine对照](docs/tabMachine对照.md) / [性能与工具](docs/性能与工具.md)；路线收口见 [版本与路线](docs/版本与路线.md)；见 [CHANGELOG](CHANGELOG.md) / [工程可用验收](docs/工程可用验收.md)）。
+**版本 `0.2.19-eng`**（`fx_sched` drive kind 表拆分；工程可用：… / wait_until / wait_real(opt-in) / chan / supervise / **lane 命名子流** / **proxy（tabProxy 轻量）** / Unity Bootstrap / abort·iquit·seq·suspend / Cont 热路径 / sync fast-path·**bench/compare/summary/alloc/doctor/trace/profile·scenarios·ci_tools**；对照 [tabMachine对照](docs/tabMachine对照.md) / [性能与工具](docs/性能与工具.md)；路线收口见 [版本与路线](docs/版本与路线.md)；见 [CHANGELOG](CHANGELOG.md) / [工程可用验收](docs/工程可用验收.md)）。
 
 本仓库用纯 Lua 模拟 Haskell 风格的 Monad，**主线是 Cont（续延）与 CPS**：
 
@@ -21,7 +21,7 @@
 6. [Unity 对接](docs/Unity对接.md) — Unity + Lua 5.3（xLua/tolua/slua）、scaled 游戏时间、主线程桥接、[`host/unity/`](host/unity/) 模板  
 7. [Lua 5.3 兼容性](docs/Lua53兼容性.md) — `__shr`、避免 5.4-only、`lua5.3 tests/run.lua`  
 8. [性能与工具](docs/性能与工具.md) — Cont 热路径、bench / flow_doctor / trace / profile；一页速查 [工具速查](docs/工具速查.md)；收口 [工具套件收口](docs/工具套件收口.md)；[`tools/README.md`](tools/README.md)  
-9. [设计说明](docs/设计说明.md) · [API 参考](docs/API.md) · [核心整理说明](docs/核心整理说明.md)（0.2.18 `fx_sched` 拆分）
+9. [设计说明](docs/设计说明.md) · [API 参考](docs/API.md) · [核心整理说明](docs/核心整理说明.md)（0.2.19 drive kind 表）
 
 需要 **Lua 5.3+**（Unity / xLua / tolua / slua 多为 5.3；已在 5.3.6 验证）。在仓库根目录执行示例（脚本已设置 `package.path`）：
 
@@ -275,7 +275,7 @@ lua-monad/
   src/cont_env.lua      # withEnv + 属性 + AfterStep
   src/coro.lua          # CPS 协程 Done|Yielded|Stopped|Failed
   src/fx.lua            # wait/connect/click/stop/fail/when_all|any/fork|join + fx.run
-  src/fx_sched.lua      # nursery session + 时间轮（WhenAll/WhenAny/Fork/Join）
+  src/fx_sched*.lua     # nursery session + 时间轮；drive 按 kind 分模块（见 docs/核心整理说明.md）
   src/monad.lua         # makeMonad + 元表糖
   src/{maybe,list,state,status,identity,reader,writer,rws,mdo}.lua
   docs/CPS设计与原理.md

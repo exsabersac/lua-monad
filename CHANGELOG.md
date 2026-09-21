@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.19-eng — 2026-09-21
+
+### Refactor（行为保持）
+- **`drive_until_block` 按 kind 拆分**：`fx_sched_drive.lua` 薄分派（~111 行）+ `S.drive_handlers` 表
+- 新增 `fx_sched_drive_{wait,fork,lane,proxy,chan,registry}.lua`：wait* / fork-join·when_*·supervise·timeout / lane* / proxy* / chan* / Registry 兜底
+- `lane_join` / `proxy_join`（同 nursery 已结束子）统一走 `apply_finished_child_to_waiter`
+- 文档：[`docs/核心整理说明.md`](docs/核心整理说明.md)；`require("fx_sched")` API / Lua 5.3 测试与 dungeon·escort·worker smoke 不变
+
 ## 0.2.18-eng — 2026-09-21
 
 ### Refactor（行为保持）

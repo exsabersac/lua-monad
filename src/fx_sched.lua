@@ -2,7 +2,7 @@
 --
 -- 实现拆到：
 --   fx_sched_util / fx_sched_chan / fx_sched_nursery /
---   fx_sched_supervise / fx_sched_drive / fx_sched_session
+--   fx_sched_supervise / fx_sched_drive（+ drive_* kind 表） / fx_sched_session
 -- 共享袋 S 晚绑定，避免前向声明网；公共 API 与拆分前一致。
 -- 详见 docs/核心整理说明.md
 
