@@ -4,7 +4,10 @@
 
 | 工具 | 作用 |
 |------|------|
-| [`bench_cont_fx.lua`](bench_cont_fx.lua) | Cont / `>>` / chain / `fx.seq` / session / **lane·proxy·chan·supervise·wait_until·when_all** 热路径粗测（时间 + ΔKB；`--json` / `--filter`） |
+| [`bench_cont_fx.lua`](bench_cont_fx.lua) | Cont / `>>` / chain / `fx.seq` / session / **lane·proxy·chan·supervise·wait_until·when_all** 热路径粗测（时间 + ΔKB；`--json` / `--filter` / `--alloc`） |
+| [`bench_compare.lua`](bench_compare.lua) | 跑当前 bench `--json`，对照 [`bench_baseline.json`](bench_baseline.json)；`--write-baseline` / `--ci` 回归 |
+| [`bench_baseline.json`](bench_baseline.json) | 本机 Lua 5.3 粗测基线（由 `--write-baseline` 生成） |
+| [`alloc_hotspot.lua`](alloc_hotspot.lua) | Cont `>>` 链分配热点：`collectgarbage("count")` before/after + 表计数启发式 |
 | [`flow_doctor.lua`](flow_doctor.lua) | 常见误配置检查：未知 kind → Failed、wait 无 scheduler 提示、打印 `STANDARD_KINDS`；`--` + `strict` 供 CI |
 | [`trace_dump.lua`](trace_dump.lua) | 演示 `opts.trace`：打印 flow 追踪事件（文本或 `--json`；可选 `--lane` / `--chan`） |
 | [`mdo.lua`](mdo.lua) / [`run_mdo.lua`](run_mdo.lua) | `@mdo` 预处理与 runner |
@@ -18,6 +21,7 @@ lua5.3 tools/bench_cont_fx.lua              # 默认 N=20000（重用例内部 c
 lua5.3 tools/bench_cont_fx.lua 50000
 lua5.3 tools/bench_cont_fx.lua --json
 lua5.3 tools/bench_cont_fx.lua --filter lane
+lua5.3 tools/bench_cont_fx.lua --alloc --json --filter 'Cont >>'
 lua5.3 tools/bench_cont_fx.lua --json --filter chan 5000
 lua5.3 tools/bench_cont_fx.lua --help
 ```
@@ -39,8 +43,56 @@ lua5.3 tools/bench_cont_fx.lua --help
 | **fx.wait_until triv** | 平凡 pred（立刻真） |
 | **when_all waits** | 两路 wait 的 `when_all` |
 
-`--json` 每行一个对象：`name` / `n` / `sec` / `rate` / `dkb`（可选 `note`）。  
+`--json` 每行一个对象：`name` / `n` / `sec` / `rate` / `dkb` / **`kb_delta`**（= `dkb`；可选 `note`）。  
+`--alloc`：文本多打 `alloc[KB before/after/Δ]`；JSON 额外 `kb_before` / `kb_after`。  
 非严格 microbench（含 GC）。
+
+## bench_compare / baseline
+
+对照仓库内基线、写基线、CI 回归（默认阈值 **25% slower**；关注 `Cont >> chain` / `fx.seq×3 run` / `fx.seq×3 eval`）。
+
+```bash
+# 跑当前 bench 并与 tools/bench_baseline.json 比 Δ%
+lua5.3 tools/bench_compare.lua
+lua5.3 tools/bench_compare.lua 20000
+
+# 用本机 lua5.3 重写基线（提交前 / 换机器后）
+lua5.3 tools/bench_compare.lua --write-baseline
+lua5.3 tools/bench_compare.lua --write-baseline --baseline tools/bench_baseline.json 20000
+
+# CI：关键用例 sec 相对基线增幅 > threshold → exit 1
+lua5.3 tools/bench_compare.lua --ci
+lua5.3 tools/bench_compare.lua --ci --threshold 0.25
+lua5.3 tools/bench_compare.lua --ci --all          # 检查全部有基线的用例
+lua5.3 tools/bench_compare.lua --filter 'Cont >>' --ci
+
+lua5.3 tools/bench_compare.lua --help
+```
+
+| 选项 | 含义 |
+|------|------|
+| `--write-baseline` | 跑 `bench_cont_fx --json` 后写入 baseline |
+| `--baseline PATH` | baseline 路径（默认 `tools/bench_baseline.json`） |
+| `--threshold F` | 回归阈值（默认 `0.25` = 25% 更慢） |
+| `--ci` | 无 baseline 或关键项回归超阈值 → 非零退出 |
+| `--all` | CI 时对全部用例检查（不仅关键三项） |
+| `--filter NAME` | 转发给 bench |
+
+输出列：`sec` / `base` / `Δsec%` / `Δrate%` / `Δkb%` / `flag`（`ok` / `faster` / `REGRESS` / `new`；N 不一致时带 `!N`）。  
+**请用与 baseline 相同的 N**（默认 20000；重用例内部仍 clamp）。
+
+## alloc_hotspot
+
+```bash
+lua5.3 tools/alloc_hotspot.lua           # 默认 N=5000，Cont >> 链
+lua5.3 tools/alloc_hotspot.lua 10000
+lua5.3 tools/alloc_hotspot.lua --map     # 额外 Cont.map 对照
+lua5.3 tools/alloc_hotspot.lua --json 5000
+lua5.3 tools/alloc_hotspot.lua --help
+```
+
+报告 `collectgarbage("count")` 的 KB before / after / Δ，以及弱表登记的 **表创建启发式**（相对参考，非精确 heap 表数）。  
+更全的用例仍用 `bench_cont_fx.lua --alloc`。
 
 ## flow_doctor
 

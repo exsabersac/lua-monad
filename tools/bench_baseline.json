@@ -1,0 +1,26 @@
+{
+  "meta": {
+    "lua": "Lua 5.3",
+    "n_default": 20000,
+    "created": "2026-09-21T07:43:11Z",
+    "host": "grok-bot-vm-212403964",
+    "tool": "tools/bench_compare.lua --write-baseline"
+  },
+  "cases": [
+    {"name":"Cont >> chain","n":20000,"sec":0.026023,"rate":768550.897,"dkb":6549.957,"kb_delta":6549.957},
+    {"name":"Cont.map chain","n":20000,"sec":0.010803,"rate":1851337.591,"dkb":4449.410,"kb_delta":4449.410},
+    {"name":"Cont.chain","n":20000,"sec":0.019034,"rate":1050751.287,"dkb":6077.574,"kb_delta":6077.574},
+    {"name":"Cont .. chain","n":20000,"sec":0.019598,"rate":1020512.297,"dkb":6078.355,"kb_delta":6078.355},
+    {"name":"Coro.start unit","n":20000,"sec":0.015483,"rate":1291739.327,"dkb":228.363,"kb_delta":228.363},
+    {"name":"fx.seq×3 run","n":20000,"sec":0.131200,"rate":152439.024,"dkb":870.473,"kb_delta":870.473},
+    {"name":"fx.seq×3 eval","n":20000,"sec":0.049948,"rate":400416.433,"dkb":680.012,"kb_delta":680.012},
+    {"name":"session wait(0)","n":5000,"sec":0.081449,"rate":61388.108,"dkb":763.551,"kb_delta":763.551,"note":"(N=5000)"},
+    {"name":"fx.lane+join","n":2000,"sec":0.378653,"rate":5281.881,"dkb":820.331,"kb_delta":820.331,"note":"(N=2000)"},
+    {"name":"fx.proxy_join","n":2000,"sec":0.395484,"rate":5057.095,"dkb":474.520,"kb_delta":474.520,"note":"(N=2000)"},
+    {"name":"fx.chan VC","n":5000,"sec":0.190196,"rate":26288.671,"dkb":542.808,"kb_delta":542.808,"note":"(N=5000)"},
+    {"name":"fx.chan GameSim","n":2000,"sec":0.071976,"rate":27787.040,"dkb":549.716,"kb_delta":549.716,"note":"(N=2000)"},
+    {"name":"fx.supervise","n":5000,"sec":1.011054,"rate":4945.334,"dkb":614.786,"kb_delta":614.786,"note":"(N=5000)"},
+    {"name":"fx.wait_until triv","n":5000,"sec":0.083318,"rate":60011.042,"dkb":1145.941,"kb_delta":1145.941,"note":"(N=5000)"},
+    {"name":"when_all waits","n":2000,"sec":0.110508,"rate":18098.237,"dkb":1036.824,"kb_delta":1036.824,"note":"(N=2000)"}
+  ]
+}

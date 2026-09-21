@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.12-eng — 2026-09-21
+
+- **性能基准对照**
+  - 新增 `tools/bench_compare.lua`：跑当前 `bench_cont_fx --json`，对照 `tools/bench_baseline.json`，打印 `Δsec%` / `Δrate%` / `Δkb%`
+  - `--write-baseline` 种子/更新基线；`--ci` 时关键项（`Cont >> chain` / `fx.seq×3 run` / `fx.seq×3 eval`）变慢超过阈值（默认 **25%**）则非零退出；`--threshold` / `--all` / `--filter`
+  - 提交本机 Lua 5.3 种子基线 `tools/bench_baseline.json`
+- **分配可观测**
+  - `bench_cont_fx`：JSON 始终含 **`kb_delta`**（= `dkb`）；新增 `--alloc`（文本 before/after；JSON 多 `kb_before`/`kb_after`）
+  - 新增 `tools/alloc_hotspot.lua`：Cont `>>` 链 `collectgarbage("count")` + 弱表计数启发式（可选 `--map`）
+- 文档：[`tools/README.md`](tools/README.md)、[`docs/性能与工具.md`](docs/性能与工具.md)
+
 ## 0.2.11-eng — 2026-09-21
 
 - **性能基准扩展**（`tools/bench_cont_fx.lua`）

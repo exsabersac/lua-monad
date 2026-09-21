@@ -5,8 +5,9 @@
 --   lua5.3 tools/bench_cont_fx.lua 50000
 --   lua5.3 tools/bench_cont_fx.lua --json
 --   lua5.3 tools/bench_cont_fx.lua --filter lane
+--   lua5.3 tools/bench_cont_fx.lua --alloc --json
 -- 结果写入 stdout；亦可重定向。非严格 microbench（含 GC）。
--- 详见 tools/README.md、docs/性能与工具.md
+-- JSON 含 dkb 与 kb_delta（同值）。详见 tools/README.md、docs/性能与工具.md
 
 package.path = "src/?.lua;" .. package.path
 
@@ -30,14 +31,17 @@ local function usage()
 选项:
   --json            每行一个 JSON 对象（machine-readable）
   --filter NAME     只跑名称包含 NAME 的用例（大小写不敏感）
+  --alloc           更清晰的分配报告（KB before/after/Δ；JSON 多 kb_before/kb_after）
   --help, -h        本说明
 
 N 默认 20000；含 wait/session 的用例内部会 clamp。
+JSON 字段：name / n / sec / rate / dkb / kb_delta（=dkb）；--alloc 时另有 kb_before / kb_after。
 ]])
 end
 
 local N = 20000
 local json_mode = false
+local alloc_mode = false
 local filter = nil
 do
   local args = arg or {}
@@ -49,6 +53,8 @@ do
       os.exit(0)
     elseif a == "--json" then
       json_mode = true
+    elseif a == "--alloc" then
+      alloc_mode = true
     elseif a:sub(1, 9) == "--filter=" then
       filter = a:sub(10)
     elseif a == "--filter" then
@@ -78,7 +84,7 @@ local function time_call(n, fn)
   fn(n)
   local t1 = os.clock()
   local m1 = collectgarbage("count")
-  return t1 - t0, m1 - m0
+  return t1 - t0, m1 - m0, m0, m1
 end
 
 local function esc_json(s)
@@ -86,11 +92,16 @@ local function esc_json(s)
   return (s:gsub("\\", "\\\\"):gsub('"', '\\"'):gsub("\n", "\\n"))
 end
 
-local function fmt(sec, n, dkb)
-  return string.format("%.3f s  (%.0f /s)  ΔKB=%.1f", sec, n / math.max(sec, 1e-12), dkb)
+local function fmt(sec, n, dkb, kb0, kb1)
+  local base = string.format("%.3f s  (%.0f /s)  ΔKB=%.1f",
+    sec, n / math.max(sec, 1e-12), dkb)
+  if alloc_mode and kb0 and kb1 then
+    base = base .. string.format("  alloc[KB before=%.1f after=%.1f Δ=%.1f]", kb0, kb1, dkb)
+  end
+  return base
 end
 
-local function emit(name, n, sec, dkb, note)
+local function emit(name, n, sec, dkb, note, kb0, kb1)
   if json_mode then
     local rate = n / math.max(sec, 1e-12)
     local parts = {
@@ -99,13 +110,18 @@ local function emit(name, n, sec, dkb, note)
       string.format('"sec":%.6f', sec),
       string.format('"rate":%.3f', rate),
       string.format('"dkb":%.3f', dkb),
+      string.format('"kb_delta":%.3f', dkb),
     }
+    if alloc_mode and kb0 and kb1 then
+      parts[#parts + 1] = string.format('"kb_before":%.3f', kb0)
+      parts[#parts + 1] = string.format('"kb_after":%.3f', kb1)
+    end
     if note then
       parts[#parts + 1] = string.format('"note":"%s"', esc_json(note))
     end
     print("{" .. table.concat(parts, ",") .. "}")
   else
-    local line = string.format("%-20s %s", name, fmt(sec, n, dkb))
+    local line = string.format("%-20s %s", name, fmt(sec, n, dkb, kb0, kb1))
     if note then
       line = line .. "  " .. note
     end
@@ -341,8 +357,10 @@ end)
 ------------------------------------------------------------
 
 if not json_mode then
-  print(string.format("bench_cont_fx  N=%d  Lua %s%s",
-    N, _VERSION, filter and ("  filter=" .. filter) or ""))
+  print(string.format("bench_cont_fx  N=%d  Lua %s%s%s",
+    N, _VERSION,
+    filter and ("  filter=" .. filter) or "",
+    alloc_mode and "  --alloc" or ""))
 end
 
 local ran = 0
@@ -352,8 +370,8 @@ for _, c in ipairs(cases) do
     if c.n ~= N then
       note = string.format("(N=%d)", c.n)
     end
-    local sec, dkb = time_call(c.n, c.run)
-    emit(c.name, c.n, sec, dkb, note)
+    local sec, dkb, kb0, kb1 = time_call(c.n, c.run)
+    emit(c.name, c.n, sec, dkb, note, kb0, kb1)
     ran = ran + 1
   end
 end
