@@ -2483,6 +2483,58 @@ do
   io.stdout:write("ok\n")
 end
 
+------------------------------------------------------------
+-- fx.run / start_session：无 Yield 同步快路径
+------------------------------------------------------------
+do
+  io.stdout:write("sync fast-path... ")
+  local Cont = require("cont")
+  local fx = require("fx")
+  local Sched = require("fx_sched")
+
+  local r = fx.run(fx.seq({ Cont.unit(1), Cont.unit(2), Cont.unit(3) }), {})
+  assert_true(r.ok and r.value == 3, "sync seq×3")
+
+  r = fx.run(fx.fail("boom"), {})
+  assert_true(r.failed and r.error == "boom", "sync fail")
+
+  r = fx.run(fx.stop("bye"), {})
+  assert_true(r.stopped and r.reason == "bye", "sync stop")
+
+  -- cancel 优先（与 pump 一致；Cont 已求值）
+  r = fx.run(Cont.unit(1), {}, { cancel = { cancelled = true } })
+  assert_true(r.stopped and r.reason == "cancelled", "sync cancel preempt")
+
+  local log = {}
+  r = fx.run(Cont.finally(Cont.unit(7), function()
+    log[#log + 1] = "f"
+  end), {})
+  assert_true(r.ok and r.value == 7 and log[1] == "f", "sync finally on Done")
+
+  local ev = {}
+  r = fx.run(Cont.unit(1), {}, {
+    trace = function(e) ev[#ev + 1] = e.type end,
+  })
+  assert_true(r.ok, "sync trace ok")
+  assert_eq(table.concat(ev, ","), "flow_start,done", "sync trace events")
+
+  -- Yield 仍走完整 session
+  local flow = Sched.start_session(
+    fx.wait(0.01) >> function(_) return Cont.unit(9) end,
+    { wait = function() return true end },
+    {}
+  )
+  assert_true(flow.done and flow.result.ok and flow.result.value == 9, "yield still session")
+  assert_true(flow.nursery ~= nil, "yield path has nursery")
+
+  -- 同步 settled flow 无 nursery
+  flow = Sched.start_session(Cont.unit(1), {}, {})
+  assert_true(flow.done and flow.result.ok, "settled flow done")
+  assert_true(flow.nursery == nil, "sync path no nursery")
+
+  io.stdout:write("ok\n")
+end
+
 
 ------------------------------------------------------------
 io.stdout:write("\n")

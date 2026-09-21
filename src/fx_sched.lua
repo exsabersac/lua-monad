@@ -5,7 +5,8 @@
 --       wait / wait_until / connect/click / when_all·when_any / fork·join·join_handles / with_timeout
 --   · run_parallel(tasks, mode) — 顶层 WhenAll/WhenAny（内部走 session）
 --
--- Cont Coro 编码：每个任务 Coro.start；wait 在多任务时登记 deadline（墙钟），
+-- Cont Coro 编码：每个任务 Coro.start；无 Yield 的终态走同步快路径（跳过 session 循环）；
+-- wait 在多任务时登记 deadline（墙钟），
 -- 单任务时可走 handlers.wait（兼容瞬时 mock）；fork 立刻把 handle 还给父任务。
 -- 若 opts.scheduler（或 opts.game）提供，wait 走 schedule/cancel，不再 busy_wait；
 -- wait_until 走 schedule_poll（FrameScheduler / GameSim）；无 poll 时用 schedule 轮询模拟；
@@ -161,13 +162,14 @@ local function new_nursery(handlers, opts)
   }
 end
 
-local function alloc_task(nursery, ma)
+-- pre_answer：已 Coro.start 的 Answer（同步快路径探测后注入，避免二次 start）
+local function alloc_task(nursery, ma, pre_answer)
   nursery.next_id = nursery.next_id + 1
   local id = nursery.next_id
   local t = {
     id = id,
     nursery = nursery,
-    answer = Coro.start(ma),
+    answer = pre_answer ~= nil and pre_answer or Coro.start(ma),
     waiting = false,
     deadline = nil,
     finished = false,
@@ -1327,6 +1329,7 @@ end
 ------------------------------------------------------------
 -- start_session / run_session
 --   start_session → flow handle（可异步）；timer/事件回调里 pump
+--   同步快路径：Coro.start 立刻终态（未 Yield）→ settled flow，无 nursery
 --   run_session：无 scheduler 时阻塞到终态（busy_wait）；有 scheduler 时
 --     若已终态返回 result，否则返回 flow（由 GameSim.tick / advance 推进）
 ------------------------------------------------------------
@@ -1340,13 +1343,103 @@ local function normalize_sched_opts(opts)
   return opts
 end
 
+-- 同步终态 → 最小 settled flow（无 nursery / pump）
+local function make_settled_flow(result)
+  local flow = {
+    _is_flow = true,
+    done = true,
+    result = result,
+    suspended = false,
+    nursery = nil,
+    root = nil,
+    _deferred = {},
+  }
+  function flow.suspend()
+  end
+  function flow.resume()
+    return flow.result
+  end
+  function flow.is_suspended()
+    return false
+  end
+  function flow.is_done()
+    return true
+  end
+  function flow.pump()
+    return flow.result
+  end
+  function flow.cancel(_reason)
+    return flow.result
+  end
+  return flow
+end
+
+local function result_from_terminal_answer(answer)
+  if Coro.isDone(answer) then
+    return { ok = true, value = answer.value }
+  elseif Coro.isAborted(answer) then
+    return { ok = false, aborted = true, reason = answer.reason }
+  elseif Coro.isStopped(answer) then
+    return { ok = false, stopped = true, reason = answer.reason }
+  elseif Coro.isFailed(answer) then
+    return { ok = false, failed = true, error = answer.error }
+  end
+  error("fx_sched: expected terminal Answer", 2)
+end
+
+local function emit_settle_traces(opts, root_id, result)
+  if result.ok then
+    emit_trace(opts, { type = "done", root_id = root_id, value = result.value })
+  elseif result.aborted then
+    emit_trace(opts, { type = "aborted", root_id = root_id, reason = result.reason })
+  elseif result.stopped then
+    emit_trace(opts, { type = "stopped", root_id = root_id, reason = result.reason })
+  elseif result.failed then
+    emit_trace(opts, { type = "failed", root_id = root_id, error = result.error })
+  end
+end
+
 function M.start_session(ma, handlers, opts)
   opts = normalize_sched_opts(opts)
   handlers = handlers or {}
   assert(ma ~= nil, "fx_sched.start_session: ma required")
 
+  -- 同步快路径：Coro.start 立刻终态（未 Yield）→ 跳过 nursery / session 循环。
+  -- 纯 Cont.unit/bind/seq、即时 stop/abort/fail、已跑完的 finally/iquit 皆适用；
+  -- 一旦 Yielded（wait/fork/…）则注入 pre_answer 走既有 session，语义不变。
+  local answer = Coro.start(ma)
+  if not Coro.isYielded(answer) then
+    local root_id = 1
+    local deadline_abs = nil
+    if opts.deadline ~= nil then
+      assert(type(opts.deadline) == "number",
+        "fx_sched: opts.deadline must be number (absolute clock)")
+      deadline_abs = opts.deadline
+    elseif opts.timeout ~= nil then
+      assert(type(opts.timeout) == "number" and opts.timeout >= 0,
+        "fx_sched: opts.timeout must be number >= 0 (seconds)")
+      deadline_abs = clock_now(opts) + opts.timeout
+    end
+    emit_trace(opts, {
+      type = "flow_start",
+      root_id = root_id,
+      deadline_abs = deadline_abs,
+    })
+    local result
+    -- 与 pump 一致：cancel 优先于已算完的终态（Cont 已在 start 时求值完毕）
+    if is_cancelled(opts.cancel) then
+      result = { ok = false, stopped = true, reason = "cancelled" }
+      emit_trace(opts, { type = "cancel", root_id = root_id, reason = "cancelled" })
+      emit_trace(opts, { type = "stopped", root_id = root_id, reason = "cancelled" })
+    else
+      result = result_from_terminal_answer(answer)
+      emit_settle_traces(opts, root_id, result)
+    end
+    return make_settled_flow(result)
+  end
+
   local nursery = new_nursery(handlers, opts)
-  local root = alloc_task(nursery, ma)
+  local root = alloc_task(nursery, ma, answer)
   nursery.root_id = root.id
 
   -- session 级截止：opts.deadline（绝对）或 opts.timeout（相对秒）

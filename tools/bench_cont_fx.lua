@@ -134,4 +134,4 @@ do
   print("session wait(0)   ", fmt(sec, n, dkb), string.format("(N=%d)", n))
 end
 
-print("done. （压力：Cont 代理表 + bind/unit 闭包；seq/.. 请用 Cont.chain；详见 docs/性能与工具.md）")
+print("done. （压力：Cont 代理表 + bind/unit；无 Yield 的 fx.run 走 sync fast-path；详见 docs/性能与工具.md）")

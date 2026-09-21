@@ -510,6 +510,7 @@ end
 
 -- run : Cont Answer a → handlers? → opts? → result
 -- 整段管道由 nursery session 驱动（与 when_all / fork·join 同一调度器）：
+--   · 无 Yield 终态：同步快路径（跳过 nursery/pump；见 fx_sched.start_session）
 --   · 单任务时 wait 仍走 handlers.wait（兼容瞬时 mock）
 --   · 多任务 / fork 后 wait 走时间轮（墙钟 deadline）
 --   · opts.cancel 协作取消父任务与未完成子任务

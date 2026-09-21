@@ -70,4 +70,4 @@ lua5.3 tools/trace_dump.lua
 ```
 
 热路径分配主要来自 Cont 代理与 `>>` 闭包；优先复用 session、缩短管道。
-`0.2.4-eng`：`Cont.chain` / 专用 `bind`·`map`，`fx.seq` 走 chain；粗测见 [`性能与工具.md`](性能与工具.md)。工具入口 [`tools/README.md`](../tools/README.md)。
+`0.2.5-eng`：Cont 热路径 + **fx.run 无 Yield 同步快路径**；粗测见 [`性能与工具.md`](性能与工具.md)。工具入口 [`tools/README.md`](../tools/README.md)。

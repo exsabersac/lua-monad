@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.5-eng — 2026-09-21
+
+- **同步快路径**：`fx_sched.start_session` / `run_session` — `Coro.start` 立刻终态（未 Yield）则跳过 nursery/pump；Yielded 注入既有 session（wait/fork/timeout/cancel/finally/iquit 不变）
+- `fx.seq×3 run` 粗测约 **22×**（相对 0.2.4）；见 [`docs/性能与工具.md`](docs/性能与工具.md)
+- 测试：sync fast-path 回归（seq/fail/stop/cancel/trace/finally + yield 仍有 nursery）
+
 ## 0.2.4-eng — 2026-09-21
 
 - **Cont 热路径**：专用 `bind`（少 adapter；已 wrap 直调 `_fn`）；新增 **`Cont.chain`**；`..` 走 chain；**`map`/`then_`/`fmap`** 避免 bind+unit 双代理
