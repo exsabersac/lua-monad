@@ -3,7 +3,8 @@
 -- 统一驱动：
 --   · run_session(root_ma) — fx.run 主路径：动态任务集（nursery），支持
 --       wait / wait_until / chan_send·recv·close / connect/click /
---       when_all·when_any / fork·join·join_handles / with_timeout / supervise
+--       when_all·when_any / fork·join·join_handles / lane·lane_join·lane_stop·lane_abort /
+--       with_timeout / supervise
 --   · run_parallel(tasks, mode) — 顶层 WhenAll/WhenAny（内部走 session）
 --
 -- Cont Coro 编码：每个任务 Coro.start；无 Yield 的终态走同步快路径（跳过 session 循环）；
@@ -159,6 +160,7 @@ local function new_nursery(handlers, opts)
   return {
     next_id = 0,
     tasks = {}, -- id → task
+    lanes = {}, -- name → task_id（命名 lane；≈ tabMachine c:start("t1")）
     handlers = handlers or {},
     opts = opts or {},
     root_id = nil,
@@ -595,6 +597,52 @@ local function cancel_fork_siblings(nursery, joined_ids, joiner_id, reason)
       end
     end
   end
+end
+
+
+-- 按名停止/中止 lane（先停后代再停自身）；mode="stop"|"abort"
+-- 返回 true=曾在跑并已终态化；false=未知名或已结束
+local function stop_named_lane(nursery, name, mode, reason)
+  local lanes = nursery.lanes
+  if lanes == nil then
+    return false
+  end
+  local id = lanes[name]
+  if id == nil then
+    return false
+  end
+  local child = nursery.tasks[id]
+  if child == nil or child.finished then
+    return false
+  end
+  if mode == "abort" then
+    reason = reason or "lane_abort"
+  else
+    reason = reason or "lane_stop"
+  end
+  -- 先停后代，再处理自身
+  cancel_descendants(nursery, child.id, reason)
+  clear_task_waits(child)
+  if mode == "abort" then
+    -- 跑 iquit/finally（Yielded.abort），再标 Aborted 供 join 传播
+    if Coro.isYielded(child.answer) and type(child.answer.abort) == "function" then
+      child.answer.abort(reason)
+    end
+    child.answer = Coro.Aborted(reason)
+    if not child._terminal_handled then
+      on_task_terminal(nursery, child, "aborted")
+    else
+      mark_finished(child)
+    end
+  else
+    child.answer = force_stop_task_answer(child.answer, reason)
+    if not child._terminal_handled then
+      on_task_terminal(nursery, child, "stopped")
+    else
+      mark_finished(child)
+    end
+  end
+  return true
 end
 
 -- session 级取消：停止 nursery 内全部未完成任务
@@ -1424,6 +1472,108 @@ drive_until_block = function(nursery, task)
           return "parked"
         end
       end
+
+    ------------------------------------------------------------
+    -- lane：命名 fork（session.lanes[name] = child.id）
+    ------------------------------------------------------------
+    elseif req.kind == "lane" then
+      local name = req.name
+      assert(type(name) == "string" and name ~= "",
+        "fx_sched: lane requires non-empty string .name")
+      local ma = req.task
+      assert(ma ~= nil, "fx_sched: lane requires .task")
+      if nursery.lanes == nil then
+        nursery.lanes = {}
+      end
+      local existing_id = nursery.lanes[name]
+      if existing_id ~= nil then
+        local old = nursery.tasks[existing_id]
+        if old and not old.finished then
+          task.answer = Coro.Failed({ tag = "lane_busy", name = name })
+          return "failed"
+        end
+      end
+      local child = alloc_task(nursery, ma)
+      child.parent_id = task.id
+      child.lane_name = name
+      inherit_deadline(child, task)
+      nursery.lanes[name] = child.id
+      local handle = { id = child.id, name = name }
+      emit_trace(opts, {
+        type = "fork",
+        task_id = task.id,
+        child_id = child.id,
+        lane = name,
+      })
+      task.answer = Coro.resume(task.answer, handle)
+
+    ------------------------------------------------------------
+    -- lane_join：按名 join（复用 fork join 语义）
+    ------------------------------------------------------------
+    elseif req.kind == "lane_join" then
+      local name = req.name
+      assert(type(name) == "string" and name ~= "",
+        "fx_sched: lane_join requires non-empty string .name")
+      local id = nursery.lanes and nursery.lanes[name]
+      if id == nil then
+        task.answer = Coro.Failed({ tag = "lane_unknown", name = name })
+        return "failed"
+      end
+      local child = nursery.tasks[id]
+      if child == nil then
+        task.answer = Coro.Failed({ tag = "lane_unknown", name = name })
+        return "failed"
+      end
+      emit_trace(opts, {
+        type = "join",
+        task_id = task.id,
+        target_id = id,
+        lane = name,
+      })
+      local want_cancel = not not req.cancel_siblings
+      if child.finished then
+        if Coro.isDone(child.answer) then
+          task.answer = Coro.resume(task.answer, child.result)
+          if want_cancel then
+            cancel_fork_siblings(nursery, { [child.id] = true }, task.id, "cancelled")
+          end
+        elseif Coro.isFailed(child.answer) then
+          task.answer = Coro.Failed(child.answer.error)
+          return "failed"
+        elseif Coro.isAborted(child.answer) then
+          task.answer = Coro.Aborted(child.answer.reason)
+          return "aborted"
+        elseif Coro.isStopped(child.answer) then
+          task.answer = Coro.Stopped(child.answer.reason)
+          return "stopped"
+        else
+          error("fx_sched: lane_join child finished with unexpected tag")
+        end
+      else
+        task.parked = "join"
+        task.join_target = child.id
+        task.join_cancel_siblings = want_cancel
+        child.joiners[#child.joiners + 1] = task.id
+        return "parked"
+      end
+
+    ------------------------------------------------------------
+    -- lane_stop / lane_abort：按名停/中止
+    ------------------------------------------------------------
+    elseif req.kind == "lane_stop" or req.kind == "lane_abort" then
+      local name = req.name
+      assert(type(name) == "string" and name ~= "",
+        "fx_sched: " .. req.kind .. " requires non-empty string .name")
+      local mode = (req.kind == "lane_abort") and "abort" or "stop"
+      local reason = req.reason
+      emit_trace(opts, {
+        type = "cancel",
+        task_id = task.id,
+        lane = name,
+        mode = mode,
+      })
+      local ok = stop_named_lane(nursery, name, mode, reason)
+      task.answer = Coro.resume(task.answer, ok)
 
     ------------------------------------------------------------
     -- wait_event：事件总线 listen；无总线则走 handlers.wait_event

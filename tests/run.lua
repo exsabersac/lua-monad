@@ -2993,6 +2993,107 @@ end
 
 
 ------------------------------------------------------------
+-- fx：命名 lane（轻量 tabMachine 多行）
+------------------------------------------------------------
+do
+  io.stdout:write("fx.lane... ")
+  local Cont = require("cont")
+  local fx = require("fx")
+  local Registry = require("fx_registry")
+  local sched = require("fx_sched")
+
+  assert_true(Registry.STANDARD_KINDS.lane ~= nil, "STANDARD_KINDS.lane")
+  assert_true(type(fx.lane) == "function", "fx.lane exists")
+  assert_true(type(fx.lanes) == "function", "fx.lanes exists")
+
+  -- lane + lane_join
+  local r = fx.run(
+    fx.lane("t1", Cont.unit(7)) >> function(h)
+      assert_eq(h.name, "t1", "handle.name")
+      return fx.lane_join("t1")
+    end
+  )
+  assert_true(r.ok and r.value == 7, "lane+join value")
+
+  -- lanes map 汇合
+  r = fx.run(fx.lanes({
+    s = Cont.unit("S"),
+    t = Cont.unit("T"),
+  }))
+  assert_true(r.ok and r.value.s == "S" and r.value.t == "T", "lanes map")
+
+  -- 并行 wall：两路 wait 经 lanes
+  local t0 = sched.now()
+  r = fx.run(fx.lanes({
+    a = fx.wait(0.04) >> function(_) return Cont.unit(1) end,
+    b = fx.wait(0.04) >> function(_) return Cont.unit(2) end,
+  }))
+  local elapsed = sched.now() - t0
+  assert_true(r.ok and r.value.a == 1 and r.value.b == 2, "lanes parallel vals")
+  assert_true(elapsed < 0.075, "lanes wall < 0.075 got " .. tostring(elapsed))
+
+  -- lane_stop 后 join → Stopped
+  r = fx.run(
+    fx.lane("slow", fx.wait(1.0) >> function(_) return Cont.unit("no") end) >> function(_)
+      return fx.lane_stop("slow", "bye") >> function(stopped)
+        assert_true(stopped == true, "lane_stop was running")
+        return fx.lane_join("slow")
+      end
+    end
+  )
+  assert_true(r.stopped and r.reason == "bye", "lane_stop → join Stopped")
+
+  -- lane_abort → join Aborted
+  r = fx.run(
+    fx.lane("bad", fx.wait(1.0) >> function(_) return Cont.unit("x") end) >> function(_)
+      return fx.lane_abort("bad", "kaboom") >> function(aborted)
+        assert_true(aborted == true, "lane_abort was running")
+        return fx.lane_join("bad")
+      end
+    end
+  )
+  assert_true(r.aborted and r.reason == "kaboom", "lane_abort → join Aborted")
+
+  -- 同名在跑 → lane_busy
+  r = fx.run(
+    fx.lane("dup", fx.wait(0.5) >> function(_) return Cont.unit(1) end) >> function(_)
+      return fx.lane("dup", Cont.unit(2))
+    end
+  )
+  assert_true(r.failed and type(r.error) == "table" and r.error.tag == "lane_busy",
+    "lane_busy")
+
+  -- 未知名 join → lane_unknown
+  r = fx.run(fx.lane_join("nope"))
+  assert_true(r.failed and type(r.error) == "table" and r.error.tag == "lane_unknown",
+    "lane_unknown")
+
+  -- stop 无名 → false，父仍成功
+  r = fx.run(fx.lane_stop("ghost") >> function(ok)
+    return Cont.unit(ok)
+  end)
+  assert_true(r.ok and r.value == false, "lane_stop unknown → false")
+
+  -- 结束后可复用同名
+  r = fx.run(
+    fx.lane("reuse", Cont.unit("first")) >> function(_)
+      return fx.lane_join("reuse") >> function(v1)
+        return fx.lane("reuse", Cont.unit("second")) >> function(_)
+          return fx.lane_join("reuse") >> function(v2)
+            return Cont.unit({ v1, v2 })
+          end
+        end
+      end
+    end
+  )
+  assert_true(r.ok and r.value[1] == "first" and r.value[2] == "second", "reuse name")
+
+  io.stdout:write("ok\n")
+end
+
+
+
+------------------------------------------------------------
 io.stdout:write("\n")
 if failures > 0 then
   io.stderr:write(failures .. " failure(s)\n")

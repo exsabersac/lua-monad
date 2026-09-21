@@ -268,6 +268,11 @@ end
 | `fx.fork(ma)` / `fx.spawn` | Cont：yield `{kind="fork",task}`；resume → handle `{id=number}`（≈ `Task.Run`） |
 | `fx.join(handle, opts?)` | Cont：yield `{kind="join",handle,cancel_siblings?}`；resume → 子 Done 值；`opts.cancel_siblings` 成功后取消同父兄弟 |
 | `fx.join_handles(handles, opts?)` | Cont：yield `{kind="join_handles",handles,cancel_siblings?}`；resume → values；可选 `cancel_siblings` |
+| `fx.lane(name, ma)` | Cont：命名 fork；yield `{kind="lane",name,task}`；resume → `{id,name}`；同名在跑 → Failed `lane_busy` |
+| `fx.lane_join(name, opts?)` | Cont：按名 join；未知 → Failed `lane_unknown`；语义同 `fx.join` |
+| `fx.lane_stop(name, reason?)` | Cont：按名停止（Stopped）；resume `true`/`false` |
+| `fx.lane_abort(name, reason?)` | Cont：按名中止（Aborted）；resume `true`/`false` |
+| `fx.lanes(map)` | Cont：`{name=ma,…}` 全部命名启动再汇合；resume `{name=value,…}` |
 | `fx.map_parallel(items, worker, opts?)` | 有限并发：`worker(item,index)→Cont Answer a`；`opts.concurrency` 默认 4（>=1）；结果按输入顺序 |
 | `fx.for_each_parallel(items, worker, opts?)` | 同 `map_parallel`，丢弃返回值，最终 `true` |
 | `fx.with_timeout(ma, seconds, opts?)` | 与 `wait(seconds)` 竞速；超时 → `Failed(opts.on_timeout or "timeout")`；成功则返回 `ma` 的值 |

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.9-eng — 2026-09-21
+
+- **命名 lane（轻量 tabMachine 多行）**
+  - `fx.lane(name, ma)`：命名 fork；`session.lanes[name]=task_id`；立刻 resume `{id,name}`
+  - `fx.lane_join(name)` / `fx.lane_stop` / `fx.lane_abort`：按名等待 / 停止(Stopped) / 中止(Aborted)
+  - `fx.lanes({ s=ma1, t=ma2 })`：全部命名启动 + `join_handles` 汇合 → `{ s=…, t=… }`
+  - 同名在跑 → Failed `{tag=lane_busy}`；未知名 join → `{tag=lane_unknown}`
+  - 复用既有 fork/join nursery；无 tab 代理 DSL
+- Session yield：`lane` / `lane_join` / `lane_stop` / `lane_abort`；`fx_registry.STANDARD_KINDS`
+- 文档：[`tabMachine对照.md`](docs/tabMachine对照.md) 映射 `c:start("t1")`；API / 验收
+- 测试：命名启停、lanes 汇合、busy/unknown、abort 传播
+
+
 ## 0.2.8-eng — 2026-09-21
 
 - **Unity host 强化**：`host/unity/`

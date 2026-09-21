@@ -2,7 +2,7 @@
 
 目标：**对齐有用的 tabMachine 能力子集**，不是完整克隆。  
 参考概念来自 ThinEureka/tabMachine（abort/stop、iquit、seq、suspend、join/select）。  
-版本：**0.2.3-eng**。
+版本：**0.2.9-eng**。
 
 图例：✅ 已对齐　🔶 部分／语义近似　❌ 本轮有意不做
 
@@ -23,7 +23,11 @@
 | `join` 全员 | `fx.when_all` | ✅ | 全 Done 才成功；任一 fail/stop/abort 失败 |
 | `cancel_siblings` | `opts.cancel_siblings` on join | ✅ | **仅 join 成功后**取消同父未纳入集合的兄弟；若兄弟先 abort/stop，waiter 先失败 |
 | suspend / resume | `flow:suspend()` / `flow:resume()`；`GameSim:suspend_flow` / `resume_flow` | ✅ | 按 flow 冻结 wait/timer/poll 兑现；≠ 全局 `GameSim:set_paused` |
-| 多行 `s`/`t` 标签机 | — | ❌ | 不引入 tab 代理语法；用 `withEnv` 步骤名 + `fx.seq` |
+| 多行 `s`/`t` 标签机 | `fx.lane` / `fx.lanes` / `fx.lane_join` | ✅ | **轻量对照**：命名子 Cont 挂在同一 session；无 tab 代理 DSL |
+| `c:start("t1")` | `fx.lane("t1", ma)` | ✅ | 立刻得 handle；`session.lanes[name]=id`；同名在跑 → `lane_busy` |
+| 按名 join 子 tab | `fx.lane_join("t1")` | ✅ | 语义同 `fx.join`；未知名 → `lane_unknown` |
+| 按名 stop/abort | `fx.lane_stop` / `fx.lane_abort` | ✅ | stop→Stopped；abort→Aborted（join 不算成功） |
+| 一次启多行再汇合 | `fx.lanes({ s=ma1, t=ma2 })` | ✅ | 命名 fork + `join_handles`；resume `{ s=…, t=… }` |
 | `tabProxy` | — | ❌ | 无代理对象模型 |
 | `xx_update` 为标签 | — | ❌ | 无每帧标签调度；用 `fx.wait_until` / `schedule_poll` |
 | notify / 邮箱协作 | `fx.chan` / `send` / `recv` | ✅ | 有界 mailbox；默认容量 1；非 tab 事件 DSL |
@@ -56,11 +60,45 @@ stop/abort/fail/cancel:  iquit → finally
 
 ---
 
+## 命名 lane ↔ `c:start`
+
+```lua
+-- tabMachine 风格多行（概念）：
+--   self:start("s")  …  s 行逻辑
+--   self:start("t")  …  t 行逻辑
+--   再 join / stop 某行
+
+-- Cont/fx 轻量对照（同一 session / nursery）：
+return fx.lane("s", s_ma) >> function(_hs)
+  return fx.lane("t", t_ma) >> function(_ht)
+    return fx.wait(0.1) >> function(_)
+      return fx.lane_join("s") >> function(sv)
+        return fx.lane_stop("t") >> function(_)
+          return Cont.unit(sv)
+        end
+      end
+    end
+  end
+end
+
+-- 或一次启多路并汇合：
+return fx.lanes({
+  s = fx.wait(0.05) >> function(_) return Cont.unit("S") end,
+  t = fx.wait(0.05) >> function(_) return Cont.unit("T") end,
+}) >> function(vals)
+  -- vals.s / vals.t
+  return Cont.unit(vals)
+end
+```
+
+与完整 tab 树的差异：无 `tabProxy`、无 `xx_update` 标签调度、无事件/UI DSL；lane 就是 **带名字的 fork 子任务**。
+
+---
+
 ## 有意推迟（非缺陷清单）
 
-- 多行 `s`/`t`、tabProxy、`xx_update` 标签语义  
+- tabProxy、`xx_update` 标签语义、完整 tab 树 DSL  
 - 完整 tabMachine 事件/UI 绑定 DSL  
-- 监督重启（见工程可用验收 P2；channel 已在 0.2.6-eng 落地）
 
 
 ## 性能粗测

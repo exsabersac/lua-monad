@@ -10,6 +10,8 @@
 --   3b. fx.seq(mas)：左到右 >> 串联 Cont，返回最后值（≈ tabMachine `..` / g_t.seq）；空 → unit(nil)。
 --   4. fx.when_all / fx.when_any 把并行组合编成 yield；由调度器时间轮并发驱动（对齐 C# WhenAll/WhenAny）。
 --   5. fx.fork / fx.join / fx.join_handles：非结构化并发（先 fork，中间可做别的事，再 join）。
+--   5b. fx.lane / lane_join / lane_stop / lane_abort / lanes：命名子流（≈ tabMachine c:start("t1")）；
+--       session.lanes 名表 + 复用 fork/join nursery。
 --   6. fx.map_parallel：有限并发池（滑动窗口 fork/join，结果按输入顺序）。
 --   7. fx.with_timeout：与 wait(deadline) 竞速；超时 → Failed("timeout")（可自定义）。
 --      截止时间向下传播到 fork 子任务；子可再用更紧的 with_timeout。
@@ -37,7 +39,8 @@
 --
 -- 标准 kind 一览（详见 fx_registry.STANDARD_KINDS）：
 --   内建：wait, wait_event, wait_until, wait_real, chan_send, chan_recv, chan_close,
---         when_all, when_any, fork, join, join_handles, with_timeout, supervise
+--         when_all, when_any, fork, join, join_handles,
+--         lane, lane_join, lane_stop, lane_abort, with_timeout, supervise
 --   演示：anim（需 register）；遗留 mock：connect, click
 
 local Cont = require("cont")
@@ -311,6 +314,110 @@ function fx.join_handles(handles, opts)
   return Coro.yield(req) >> function(values)
     return Cont.unit(values)
   end
+end
+
+------------------------------------------------------------
+-- 命名 lane（轻量 tabMachine 多行：c:start("t1") 对照）
+-- 复用 fork/join nursery；session.lanes[name] = task_id
+------------------------------------------------------------
+
+-- lane : name → Cont Answer a → Cont Answer Handle
+-- 启动 ma 为命名子 lane；立刻 resume handle { id, name }
+-- 同名仍在跑 → Failed { tag="lane_busy", name }
+-- Yield: { kind="lane", name, task=ma }
+function fx.lane(name, ma)
+  assert(type(name) == "string" and name ~= "",
+    "fx.lane: name must be non-empty string")
+  assert(ma ~= nil, "fx.lane: expected Cont Answer")
+  return Coro.yield({ kind = "lane", name = name, task = ma }) >> function(handle)
+    return Cont.unit(handle)
+  end
+end
+
+-- lane_join : name → opts? → Cont Answer a
+-- 等到该名 lane Done；Failed/Stopped/Aborted 向父传播（同 fx.join）
+-- 未知名 → Failed { tag="lane_unknown", name }
+-- Yield: { kind="lane_join", name, cancel_siblings?=bool }
+function fx.lane_join(name, opts)
+  assert(type(name) == "string" and name ~= "",
+    "fx.lane_join: name must be non-empty string")
+  opts = opts or {}
+  local req = { kind = "lane_join", name = name }
+  if opts.cancel_siblings then
+    req.cancel_siblings = true
+  end
+  return Coro.yield(req) >> function(value)
+    return Cont.unit(value)
+  end
+end
+
+-- lane_stop : name → reason? → Cont Answer bool
+-- 合作式停止命名 lane（Stopped）；resume true=曾在跑，false=无名/已终态
+-- Yield: { kind="lane_stop", name, reason? }
+function fx.lane_stop(name, reason)
+  assert(type(name) == "string" and name ~= "",
+    "fx.lane_stop: name must be non-empty string")
+  local req = { kind = "lane_stop", name = name }
+  if reason ~= nil then
+    req.reason = reason
+  end
+  return Coro.yield(req) >> function(ok)
+    return Cont.unit(ok)
+  end
+end
+
+-- lane_abort : name → reason? → Cont Answer bool
+-- 异常中止命名 lane（Aborted，join 不算成功）；resume true/false 同 lane_stop
+-- Yield: { kind="lane_abort", name, reason? }
+function fx.lane_abort(name, reason)
+  assert(type(name) == "string" and name ~= "",
+    "fx.lane_abort: name must be non-empty string")
+  local req = { kind = "lane_abort", name = name }
+  if reason ~= nil then
+    req.reason = reason
+  end
+  return Coro.yield(req) >> function(ok)
+    return Cont.unit(ok)
+  end
+end
+
+-- lanes : { name = Cont Answer a, ... } → Cont Answer { name = a, ... }
+-- 按名排序后依次 lane 启动，再 join_handles 汇合（并发跑，结果按名字典）
+-- 空 map → unit({})
+function fx.lanes(map)
+  assert(type(map) == "table", "fx.lanes: expected name→Cont map")
+  local names = {}
+  for name, ma in pairs(map) do
+    assert(type(name) == "string" and name ~= "",
+      "fx.lanes: keys must be non-empty strings")
+    assert(ma ~= nil, "fx.lanes: Cont required for lane " .. tostring(name))
+    names[#names + 1] = name
+  end
+  table.sort(names)
+  if #names == 0 then
+    return Cont.unit({})
+  end
+  local function start_at(i, entries)
+    if i > #names then
+      local handles = {}
+      for j = 1, #entries do
+        handles[j] = entries[j].handle
+      end
+      return fx.join_handles(handles) >> function(vals)
+        local out = {}
+        for j = 1, #entries do
+          out[entries[j].name] = vals[j]
+        end
+        return Cont.unit(out)
+      end
+    end
+    local name = names[i]
+    return fx.lane(name, map[name]) >> function(h)
+      entries[#entries + 1] = { name = name, handle = h }
+      return start_at(i + 1, entries)
+    end
+  end
+  return start_at(1, {})
 end
 
 ------------------------------------------------------------

@@ -52,6 +52,22 @@ M.STANDARD_KINDS = {
   fork = { role = "builtin", desc = "非结构化并发：启动子任务，立刻 resume handle" },
   join = { role = "builtin", desc = "等待单个 fork handle" },
   join_handles = { role = "builtin", desc = "按序等待多个 fork handle" },
+  lane = {
+    role = "builtin",
+    desc = "命名 fork：session.lanes[name]=id；立刻 resume handle；同名在跑 → Failed(lane_busy)",
+  },
+  lane_join = {
+    role = "builtin",
+    desc = "按名等待 lane；未知 → Failed(lane_unknown)；语义同 join",
+  },
+  lane_stop = {
+    role = "builtin",
+    desc = "按名合作式停止 lane（Stopped）；resume true/false",
+  },
+  lane_abort = {
+    role = "builtin",
+    desc = "按名异常中止 lane（Aborted）；join 不算成功；resume true/false",
+  },
   with_timeout = { role = "builtin", desc = "与 wait(deadline) 竞速；超时 → Failed；截止向下传播到 fork" },
   supervise = {
     role = "builtin",
