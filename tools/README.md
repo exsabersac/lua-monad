@@ -12,6 +12,7 @@
 | [`trace_dump.lua`](trace_dump.lua) | 演示 `opts.trace`：打印 flow 追踪事件（文本或 `--json`；可选 `--lane` / `--chan`） |
 | [`trace_export.lua`](trace_export.lua) | 小型 Cont/fx 场景 + `opts.trace` → JSON 文件（默认 `tools/trace_out.json`；`--lane` / `--chan` / `--out`） |
 | [`bench_summary.lua`](bench_summary.lua) | 从 `bench_cont_fx --json`（或 stdin/文件）生成 Markdown 表；`--out tools/bench_summary.md` |
+| [`profile_flow.lua`](profile_flow.lua) | Cont/fx 场景 + wrapping tracer：`os.clock`/墙钟打点；按 yield kind（+step）汇总 top；`--json` / `--smoke` |
 | [`mdo.lua`](mdo.lua) / [`run_mdo.lua`](run_mdo.lua) | `@mdo` 预处理与 runner |
 
 性能数字与解读见 [`docs/性能与工具.md`](../docs/性能与工具.md)。
@@ -160,6 +161,24 @@ lua5.3 tools/bench_summary.lua --help
 
 列：`name` / `n` / `sec` / `rate` / `kb_delta`。
 
+## profile_flow
+
+用 wrapping `opts.trace` 给 Cont/fx 场景打点：每个事件记录 `os.clock`（有 luasocket 时墙钟用 `socket.gettime`），相邻 Δ 归入 **yield kind**（无则 `type`；有 `step`/`name`/`lane` 则附带 `step=`）。打印 / `--json` 导出 top kinds。
+
+场景：`sync seq`、`wait VirtualClock`、`lane`、`chan`。
+
+```bash
+lua5.3 tools/profile_flow.lua              # 默认 N=20
+lua5.3 tools/profile_flow.lua 50
+lua5.3 tools/profile_flow.lua --smoke      # N=1，CI 默认
+lua5.3 tools/profile_flow.lua --json
+lua5.3 tools/profile_flow.lua --json --out tools/profile_out.json
+lua5.3 tools/profile_flow.lua --filter lane --top 8
+lua5.3 tools/profile_flow.lua --help
+```
+
+`PROFILE=1 ./scripts/ci_tools.sh` 跑 N=20；否则 ci 始终 `--smoke`。
+
 ## ci_tools（scripts/）
 
 仓库根一键：
@@ -167,9 +186,10 @@ lua5.3 tools/bench_summary.lua --help
 ```bash
 ./scripts/ci_tools.sh
 ALLOW_BENCH_REGRESSION=1 ./scripts/ci_tools.sh   # bench --ci 回归时 soft-fail
+PROFILE=1 ./scripts/ci_tools.sh                  # profile_flow 用 N=20（默认 --smoke N=1）
 ```
 
-顺序：`test_lua53.sh` → `flow_doctor --ci` → `bench_compare --ci` → `alloc_hotspot` smoke（N=100）。
+顺序：`test_lua53.sh` → `flow_doctor --ci` → `bench_compare --ci` → `alloc_hotspot` smoke（N=100）→ `profile_flow`（默认 `--smoke`；`PROFILE=1` 时 N=20）。
 
 ## mdo
 

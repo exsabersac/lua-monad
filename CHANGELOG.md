@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.14-eng — 2026-09-21
+
+- **profile_flow（场景打点）**
+  - 新增 `tools/profile_flow.lua`：wrapping `opts.trace`，每事件记录 `os.clock`（有 luasocket 时墙钟 `socket.gettime`）
+  - 相邻 Δ 归入 yield kind（无则 `type`；有 `step`/`name`/`lane` 附带 `step=`）；打印 top kinds by total time
+  - 场景：`sync seq` / `wait VirtualClock` / `lane` / `chan`；`--json` / `--out` / `--smoke` / `--filter` / `--top`
+- **CI**
+  - `scripts/ci_tools.sh` 末步始终 `profile_flow --smoke`（N=1）；`PROFILE=1` 时 N=20
+- 文档：[`tools/README.md`](tools/README.md)、[`docs/性能与工具.md`](docs/性能与工具.md)
+
 ## 0.2.13-eng — 2026-09-21
 
 - **CI 工具链**

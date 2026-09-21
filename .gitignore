@@ -25,3 +25,4 @@ luarocks/
 
 # Tool generated outputs
 tools/trace_out.json
+tools/profile_out.json
