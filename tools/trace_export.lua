@@ -6,14 +6,15 @@
 --   lua5.3 tools/trace_export.lua --out /tmp/trace.json
 --   lua5.3 tools/trace_export.lua --lane --chan --out tools/trace_out.json
 -- 默认输出：tools/trace_out.json
--- 详见 tools/README.md
+-- 场景拼装：tools/scenarios/（wait_vc + 可选 lane_pair / chan_ping）
+-- 详见 tools/README.md、docs/工具速查.md
 
-package.path = "src/?.lua;" .. package.path
+package.path = "src/?.lua;tools/?.lua;tools/?/init.lua;" .. package.path
 
-local Cont = require("cont")
 local fx = require("fx")
 local Sched = require("fx_sched")
 local Scheduler = require("scheduler")
+local Scenarios = require("scenarios")
 
 local DEFAULT_OUT = "tools/trace_out.json"
 
@@ -34,6 +35,7 @@ local function usage()
 说明:
   opts.trace 须为 function（传 true 会被忽略）。
   输出为单个 JSON 对象：{"meta":{...},"events":[{...},...]}
+  场景来自 tools/scenarios（wait_vc + 可选 lane_pair / chan_ping）。
   文本 dump 请用 tools/trace_dump.lua。
 ]])
 end
@@ -121,7 +123,7 @@ local function encode_event_line(ev)
 end
 
 ------------------------------------------------------------
--- Scenario：小型 Cont/fx + opts.trace 收集
+-- Scenario：tools/scenarios + opts.trace 收集
 ------------------------------------------------------------
 
 local events = {}
@@ -131,27 +133,15 @@ end
 
 local clock = Scheduler.VirtualClock()
 local steps = {
-  fx.wait(wait_s),
-  Cont.unit("ok"),
+  Scenarios.by_id.wait_vc.build({ wait = wait_s, value = "ok" }),
 }
 
 if demo_lane then
-  steps[#steps + 1] = fx.lane("demo", Cont.unit(42)) >> function(_)
-    return fx.lane_join("demo")
-  end
+  steps[#steps + 1] = Scenarios.by_id.lane_pair.build({ lane = "demo", value = 42 })
 end
 
 if demo_chan then
-  steps[#steps + 1] = (function()
-    local ch = fx.chan()
-    return fx.fork(fx.send(ch, "ping")) >> function(h)
-      return fx.recv(ch) >> function(v)
-        return fx.join(h) >> function()
-          return Cont.unit(v)
-        end
-      end
-    end
-  end)()
+  steps[#steps + 1] = Scenarios.by_id.chan_ping.build({ msg = "ping" })
 end
 
 local ma = fx.seq(steps)

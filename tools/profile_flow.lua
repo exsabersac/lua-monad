@@ -6,15 +6,14 @@
 --   lua5.3 tools/profile_flow.lua --json
 --   lua5.3 tools/profile_flow.lua --smoke
 --   lua5.3 tools/profile_flow.lua --json --out tools/profile_out.json
--- 场景：sync seq / wait VirtualClock / lane / chan
--- 详见 tools/README.md、docs/性能与工具.md
+-- 场景：tools/scenarios/（sync_seq / wait_vc / lane_pair / chan_ping / supervise_once）
+-- 详见 tools/README.md、docs/性能与工具.md、docs/工具速查.md
 
-package.path = "src/?.lua;" .. package.path
+package.path = "src/?.lua;tools/?.lua;tools/?/init.lua;" .. package.path
 
-local Cont = require("cont")
-local fx = require("fx")
 local Sched = require("fx_sched")
 local Scheduler = require("scheduler")
+local Scenarios = require("scenarios")
 
 ------------------------------------------------------------
 -- CLI
@@ -35,6 +34,8 @@ local function usage()
   --help, -h        本说明
 
 N 默认 20；--smoke 时强制 N=1。
+场景来自 tools/scenarios/：sync_seq / wait_vc / lane_pair / chan_ping / supervise_once
+（--filter 可匹配展示名或 id，如 lane / sync_seq）。
 每个 trace 事件记录 t_clock=os.clock()；相邻事件 Δ 归入
   · yield/resume 的 kind（若有）
   · 否则 type
@@ -102,11 +103,18 @@ if smoke then
   N = 1
 end
 
-local function match_filter(name)
+local function match_filter(name, id)
   if filter == nil or filter == "" then
     return true
   end
-  return name:lower():find(filter:lower(), 1, true) ~= nil
+  local needle = filter:lower()
+  if name:lower():find(needle, 1, true) then
+    return true
+  end
+  if id and tostring(id):lower():find(needle, 1, true) then
+    return true
+  end
+  return false
 end
 
 ------------------------------------------------------------
@@ -301,7 +309,7 @@ local function make_profiler()
 end
 
 ------------------------------------------------------------
--- Scenarios
+-- Scenarios（tools/scenarios）
 ------------------------------------------------------------
 
 local function run_once(build_ma, opts_extra)
@@ -325,48 +333,17 @@ local function run_once(build_ma, opts_extra)
   return flow, prof
 end
 
-local scenarios = {
-  {
-    name = "sync seq",
+-- 展示名保持与历史 CLI --filter 兼容（sync seq / wait VirtualClock / …）
+local scenarios = {}
+for _, mod in ipairs(Scenarios.list) do
+  scenarios[#scenarios + 1] = {
+    name = mod.name or mod.id,
+    id = mod.id,
     build = function()
-      return fx.seq({
-        Cont.unit(1),
-        Cont.unit(2),
-        Cont.unit(3),
-      })
+      return mod.build()
     end,
-  },
-  {
-    name = "wait VirtualClock",
-    build = function()
-      return fx.seq({
-        fx.wait(0.01),
-        Cont.unit("after-wait"),
-      })
-    end,
-  },
-  {
-    name = "lane",
-    build = function()
-      return fx.lane("p", Cont.unit(7)) >> function(_)
-        return fx.lane_join("p")
-      end
-    end,
-  },
-  {
-    name = "chan",
-    build = function()
-      local ch = fx.chan()
-      return fx.fork(fx.send(ch, "ping")) >> function(h)
-        return fx.recv(ch) >> function(v)
-          return fx.join(h) >> function()
-            return Cont.unit(v)
-          end
-        end
-      end
-    end,
-  },
-}
+  }
+end
 
 ------------------------------------------------------------
 -- Run
@@ -392,7 +369,7 @@ local wall_src_seen = "os.clock"
 local any_fail = false
 
 for _, sc in ipairs(scenarios) do
-  if match_filter(sc.name) then
+  if match_filter(sc.name, sc.id) then
     local total_clock = 0
     local total_wall = 0
     local event_count = 0

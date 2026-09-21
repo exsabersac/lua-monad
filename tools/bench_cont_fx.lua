@@ -9,7 +9,7 @@
 -- 结果写入 stdout；亦可重定向。非严格 microbench（含 GC）。
 -- JSON 含 dkb 与 kb_delta（同值）。详见 tools/README.md、docs/性能与工具.md
 
-package.path = "src/?.lua;" .. package.path
+package.path = "src/?.lua;tools/?.lua;tools/?/init.lua;" .. package.path
 
 local Cont = require("cont")
 local Coro = require("coro")
@@ -17,6 +17,7 @@ local fx = require("fx")
 local Sched = require("fx_sched")
 local Scheduler = require("scheduler")
 local GameSim = require("game_sim")
+local Scenarios = require("scenarios")
 
 ------------------------------------------------------------
 -- CLI
@@ -202,18 +203,18 @@ add("Coro.start unit", function(n)
   end
 end)
 
--- 3) fx.seq 短数组 via fx.run
+-- 3) fx.seq 短数组 via fx.run（scenarios.sync_seq）
 add("fx.seq×3 run", function(n)
   for _ = 1, n do
-    local r = fx.run(fx.seq({ Cont.unit(1), Cont.unit(2), Cont.unit(3) }), {})
+    local r = fx.run(Scenarios.by_id.sync_seq.build(), {})
     assert(r.ok and r.value == 3)
   end
 end)
 
--- 3b) fx.seq eval only
+-- 3b) fx.seq eval only（scenarios.sync_seq）
 add("fx.seq×3 eval", function(n)
   for _ = 1, n do
-    local m = fx.seq({ Cont.unit(1), Cont.unit(2), Cont.unit(3) })
+    local m = Scenarios.by_id.sync_seq.build()
     assert(Cont.evalCont(m) == 3)
   end
 end)
@@ -230,15 +231,11 @@ add("session wait(0)", math.min(N, 5000), function(nn)
   end
 end)
 
--- 5) fx.lane + lane_join（同步子 Cont）
+-- 5) fx.lane + lane_join（scenarios.lane_pair；名轮换避免语义依赖）
 add("fx.lane+join", math.min(N, 2000), function(n)
   for i = 1, n do
     local name = "L" .. tostring(i % 8)
-    local r = fx.run(
-      fx.lane(name, Cont.unit(i)) >> function(_)
-        return fx.lane_join(name)
-      end
-    )
+    local r = fx.run(Scenarios.by_id.lane_pair.build({ lane = name, value = i }))
     assert(r.ok and r.value == i)
   end
 end)
@@ -256,19 +253,12 @@ add("fx.proxy_join", math.min(N, 2000), function(n)
   end
 end)
 
--- 7) fx.chan send/recv — VirtualClock session
+-- 7) fx.chan send/recv — VirtualClock session（scenarios.chan_ping）
 add("fx.chan VC", math.min(N, 5000), function(nn)
   for _ = 1, nn do
     local clock = Scheduler.VirtualClock()
-    local ch = fx.chan()
     local flow = Sched.start_session(
-      fx.fork(fx.send(ch, 1)) >> function(h)
-        return fx.recv(ch) >> function(v)
-          return fx.join(h) >> function()
-            return Cont.unit(v)
-          end
-        end
-      end,
+      Scenarios.by_id.chan_ping.build({ msg = 1 }),
       {},
       { scheduler = clock }
     )
@@ -276,39 +266,20 @@ add("fx.chan VC", math.min(N, 5000), function(nn)
   end
 end)
 
--- 8) fx.chan send/recv — GameSim
+-- 8) fx.chan send/recv — GameSim（scenarios.chan_ping）
 add("fx.chan GameSim", math.min(N, 2000), function(nn)
   for _ = 1, nn do
     local sim = GameSim.new({ dt = 1 / 30 })
-    local ch = fx.chan()
-    local r = sim:run(
-      fx.fork(fx.send(ch, "x")) >> function(h)
-        return fx.recv(ch) >> function(v)
-          return fx.join(h) >> function()
-            return Cont.unit(v)
-          end
-        end
-      end
-    )
+    local r = sim:run(Scenarios.by_id.chan_ping.build({ msg = "x" }))
     assert(r.ok and r.value == "x")
   end
 end)
 
--- 9) fx.supervise：失败一次后成功
+-- 9) fx.supervise：失败一次后成功（scenarios.supervise_once）
 add("fx.supervise", math.min(N, 5000), function(nn)
   for _ = 1, nn do
-    local tries = 0
-    local r = fx.run(fx.supervise(
-      Cont.unit(nil) >> function()
-        tries = tries + 1
-        if tries == 1 then
-          return fx.fail("once")
-        end
-        return Cont.unit("ok")
-      end,
-      { max_restarts = 2 }
-    ))
-    assert(r.ok and r.value == "ok" and tries == 2)
+    local r = fx.run(Scenarios.by_id.supervise_once.build())
+    assert(r.ok and r.value == "ok")
   end
 end)
 

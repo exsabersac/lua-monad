@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.15-eng — 2026-09-21
+
+- **共享场景模块（`tools/scenarios/`）**
+  - 新增可复用 Cont/fx 场景：`sync_seq` / `wait_vc` / `lane_pair` / `chan_ping` / `supervise_once`
+  - 入口 `require("scenarios")`（`list` / `by_id` / `get` / `filter`）；各模块 `build(opts?) → Cont`
+  - `profile_flow` / `trace_export` / `bench_cont_fx`（重叠用例）改为 require 场景，避免重复拼装
+  - `profile_flow` 增场景 **supervise once**；`--filter` 可匹配展示名或 id
+- **文档**
+  - 新增一页速查 [`docs/工具速查.md`](docs/工具速查.md)（全工具 copy-paste 命令）
+  - README / [`tools/README.md`](tools/README.md) / [`docs/性能与工具.md`](docs/性能与工具.md) 链接与版本刷新
+- **无 Tab DSL**；仅 Cont/fx 原语
+
+
 ## 0.2.14-eng — 2026-09-21
 
 - **profile_flow（场景打点）**

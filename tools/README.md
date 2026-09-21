@@ -1,9 +1,12 @@
 # tools/
 
-仓库根目录下运行（`package.path` 已含 `src/?.lua`）。目标解释器：**Lua 5.3**。
+仓库根目录下运行（`package.path` 已含 `src/?.lua`；场景工具另加 `tools/?.lua`）。目标解释器：**Lua 5.3**。
+
+一页速查（全命令 copy-paste）：[`docs/工具速查.md`](../docs/工具速查.md)。
 
 | 工具 | 作用 |
 |------|------|
+| [`scenarios/`](scenarios/) | 可复用 Cont/fx 场景模块（`sync_seq` / `wait_vc` / `lane_pair` / `chan_ping` / `supervise_once`）；bench/profile/trace 共用 |
 | [`bench_cont_fx.lua`](bench_cont_fx.lua) | Cont / `>>` / chain / `fx.seq` / session / **lane·proxy·chan·supervise·wait_until·when_all** 热路径粗测（时间 + ΔKB；`--json` / `--filter` / `--alloc`） |
 | [`bench_compare.lua`](bench_compare.lua) | 跑当前 bench `--json`，对照 [`bench_baseline.json`](bench_baseline.json)；`--write-baseline` / `--ci` 回归 |
 | [`bench_baseline.json`](bench_baseline.json) | 本机 Lua 5.3 粗测基线（由 `--write-baseline` 生成） |
@@ -15,7 +18,7 @@
 | [`profile_flow.lua`](profile_flow.lua) | Cont/fx 场景 + wrapping tracer：`os.clock`/墙钟打点；按 yield kind（+step）汇总 top；`--json` / `--smoke` |
 | [`mdo.lua`](mdo.lua) / [`run_mdo.lua`](run_mdo.lua) | `@mdo` 预处理与 runner |
 
-性能数字与解读见 [`docs/性能与工具.md`](../docs/性能与工具.md)。
+性能数字与解读见 [`docs/性能与工具.md`](../docs/性能与工具.md)；命令一页见 [`docs/工具速查.md`](../docs/工具速查.md)。
 
 ## bench_cont_fx
 
@@ -132,7 +135,8 @@ lane / chan / supervise 等事件已由 session 发出；本工具只负责 dump
 
 ## trace_export
 
-把 `opts.trace` 事件收集进 **JSON 文件**（对照 `trace_dump` 的 stdout dump）。
+把 `opts.trace` 事件收集进 **JSON 文件**（对照 `trace_dump` 的 stdout dump）。  
+场景拼装走 [`scenarios/`](scenarios/)（`wait_vc` + 可选 `lane_pair` / `chan_ping`）。
 
 ```bash
 lua5.3 tools/trace_export.lua
@@ -165,7 +169,7 @@ lua5.3 tools/bench_summary.lua --help
 
 用 wrapping `opts.trace` 给 Cont/fx 场景打点：每个事件记录 `os.clock`（有 luasocket 时墙钟用 `socket.gettime`），相邻 Δ 归入 **yield kind**（无则 `type`；有 `step`/`name`/`lane` 则附带 `step=`）。打印 / `--json` 导出 top kinds。
 
-场景：`sync seq`、`wait VirtualClock`、`lane`、`chan`。
+场景来自 [`scenarios/`](scenarios/)：`sync seq`、`wait VirtualClock`、`lane`、`chan`、**`supervise once`**（`--filter` 可匹配展示名或 id）。
 
 ```bash
 lua5.3 tools/profile_flow.lua              # 默认 N=20
@@ -174,10 +178,25 @@ lua5.3 tools/profile_flow.lua --smoke      # N=1，CI 默认
 lua5.3 tools/profile_flow.lua --json
 lua5.3 tools/profile_flow.lua --json --out tools/profile_out.json
 lua5.3 tools/profile_flow.lua --filter lane --top 8
+lua5.3 tools/profile_flow.lua --filter sync_seq
 lua5.3 tools/profile_flow.lua --help
 ```
 
 `PROFILE=1 ./scripts/ci_tools.sh` 跑 N=20；否则 ci 始终 `--smoke`。
+
+## scenarios/
+
+可复用 Cont/fx 场景（**无 Tab DSL**）。`require("scenarios")` → `list` / `by_id` / `get` / `filter`。
+
+| id | name | 含义 |
+|----|------|------|
+| `sync_seq` | sync seq | 纯同步 `fx.seq`×3 |
+| `wait_vc` | wait VirtualClock | `fx.wait` + unit |
+| `lane_pair` | lane | 命名 lane + join |
+| `chan_ping` | chan | send/recv ping |
+| `supervise_once` | supervise once | fail→ok |
+
+`profile_flow` / `trace_export` / `bench_cont_fx`（重叠用例）已改为 require 本目录。详见 [`scenarios/README.md`](scenarios/README.md)。
 
 ## ci_tools（scripts/）
 
