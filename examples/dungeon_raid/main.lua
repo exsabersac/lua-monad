@@ -49,6 +49,10 @@ slog("  校验 pause=%s finally=%s chests=%s",
   tostring(result.checks.pause_deferred),
   tostring(result.checks.mob_finally),
   tostring(result.checks.chests_parallel))
+slog("  新 API supervise_failed=%s supervise_recovered=%s loot_chan=%s",
+  tostring(result.checks.shaman_supervise_failed),
+  tostring(result.checks.shaman_supervised),
+  tostring(result.checks.loot_chan))
 slog("----------------------")
 
 if result.victory and result.ok then

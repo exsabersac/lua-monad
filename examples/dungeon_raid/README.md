@@ -24,8 +24,8 @@ assert(r.victory)
 
 1. **走廊（刺客）**：`assassin` AI — 潜行 → `when_any(player_slash, ambush_delay)` 伏击或被识破 → 普攻
 2. **旅途**：`fx.wait`；外层 `set_paused` / 恢复（校验 pause 推迟 wait）
-3. **骸骨密室（狂战士 + 萨满）**：两只复杂 AI 并行，`when_all` 对决
-4. **双宝箱**：`map_parallel`，游戏时间 ≈ `max` 而非求和
+3. **骸骨密室（狂战士 + 萨满）**：两只复杂 AI 并行，`when_all` 对决；萨满图腾首次 Failed 后由 `supervise` 重启一次
+4. **双宝箱**：`map_parallel` 并行开启，再用 `chan` 通知战报，游戏时间 ≈ `max` 而非求和
 5. **Boss 厅**：`with_timeout` 读条；默认玩家打断，另测超时 Failed 路径
 6. 击杀怪 → `destroy_entity` → AI `finally` 清理 / 掉落标志
 
@@ -35,7 +35,7 @@ assert(r.victory)
 |---------------|----------|---------------------|
 | `basic` / 默认 / `boss` | 风摇 → `mob_attack` → 冷却，循环至销毁 | `wait` / `emit` / `finally` |
 | `berserker` 狂战士 | 每轮查 `hp≤50%` → 日志暴怒、缩短 windup、提高 atk；直至 destroy → finally | 相位（轮询 hp）、状态突变 |
-| `shaman` 萨满 | 引导：`emit mob_cast_start` + `when_any(wait(cast), wait_event player_slash)`；成功自疗；偶发 `spawn_mob`+`AI.start(basic)`；finally 清残留召唤物 | 可打断读条、`wait_event`、召唤与 cleanup |
+| `shaman` 萨满 | 引导：`emit mob_cast_start` + `when_any(wait(cast), wait_event player_slash)`；图腾首次 Failed 后 `supervise(max_restarts=1)` 恢复；finally 清残留召唤物 | 可打断读条、`wait_event`、监督式重启、召唤与 cleanup |
 | `assassin` 刺客 | 短暂潜行 → `when_any(被砍, 延时伏击 1.5×)` → 失败则转入普攻 | 重度 `when_any` |
 
 玩家挥砍命中时 `combat.fight_one` 会 `sim:emit("player_slash", { id, target_id })`，供萨满打断与刺客窗口监听。
@@ -55,9 +55,17 @@ assert(r.victory)
 | `fx.fork` / `join_handles` | `combat.fight_mobs_fork_join`（备选 API） |
 | `fx.map_parallel` | 双宝箱 |
 | `fx.with_timeout` | Boss 读条 |
+| `fx.supervise` | 萨满图腾首次失败后的唯一一次重启 |
+| `fx.chan` / `send` / `recv` / `close` | 宝箱奖励通知战报 |
 | `GameSim` spawn/destroy、pause、tick、emit | 全程 |
 | `sim:register` 异步 `anim` | 攻击挥砍 |
 | `opts.scheduler = sim` | `start_flow` 内置 |
+
+## 展示验收清单
+
+- [x] `fx.supervise`：萨满图腾第一次走 `Failed`，`max_restarts=1` 后确定性恢复。
+- [x] `fx.chan`：宝箱 worker `send` 奖励，战报侧 `recv` 并 `close` 通知 channel。
+- [x] `lua examples/dungeon_raid/main.lua test`：胜利、pause、finally、并行宝箱及上述新 API 校验均通过。
 
 ## 模块
 

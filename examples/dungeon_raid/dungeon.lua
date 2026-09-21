@@ -101,7 +101,28 @@ local function loot_chests(world)
     -- 喝药回一点血（叙事）
     world.player.hp = math.min(world.player.max_hp, world.player.hp + 15)
     world.log("使用小药水，hp=%d", world.player.hp)
-    return Cont.unit(loots)
+
+    -- 用 channel 把宝箱结果通知给战报旁路，保持叙事与生产解耦。
+    local loot_ch = fx.chan(1)
+    world.log("【战利品·chan】建立通知 channel(cap=1)")
+    local notify = fx.fork(
+      fx.send(loot_ch, { count = #loots, first = loots[1].loot }) >> function(_)
+        world.log("【战利品·chan】send：宝箱奖励已备妥（%d件）", #loots)
+        return Cont.unit(true)
+      end
+    )
+    return notify >> function(handle)
+      return fx.recv(loot_ch) >> function(message)
+        world.checks.loot_chan = true
+        world.log("【战利品·chan】recv：收到%d件奖励（首件=%s）",
+          message.count, message.first)
+        return fx.join(handle) >> function(_)
+          return fx.close(loot_ch) >> function(_)
+            return Cont.unit(loots)
+          end
+        end
+      end
+    end
   end
 end
 
@@ -255,6 +276,9 @@ local function run_asserts(world, flow_result, opts)
     need(C.boss_path == "timeout", "timeout mode boss path")
   end
   need(C.victory, "player should clear dungeon with hp>0")
+  need(C.shaman_supervise_failed and C.shaman_supervised,
+    "shaman supervise should recover one deterministic Failed attempt")
+  need(C.loot_chan, "loot notification should use channel send/recv")
   need(flow_result and flow_result.ok, "main flow should Done ok")
   need(World.player_alive(world), "player alive")
   need(world.rooms_cleared >= 3, "three rooms cleared")

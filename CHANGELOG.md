@@ -10,6 +10,7 @@
   - 与 finally / iquit 对齐：每次子尝试独立跑生命周期
 - Session yield：`supervise`；`fx_registry.STANDARD_KINDS.supervise`
 - 文档：异步效果 / 工程可用验收 / API / 工程对接；测试覆盖 VirtualClock + GameSim
+- **地牢突袭 showcase 接入**：萨满图腾用 `fx.supervise(max_restarts=1)` 从一次确定性 `Failed` 恢复；宝箱奖励用 `fx.chan` 做通知并在日志中展示。
 
 ## 0.2.6-eng — 2026-09-21
 

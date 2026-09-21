@@ -121,20 +121,40 @@ end
 function AI._shaman_summon(world, mob)
   local meta = world.mob_meta[mob.id]
   meta.adds = meta.adds or {}
-  local add = World.spawn_mob(world, {
-    name = mob.name .. "·图腾灵",
-    hp = 12,
-    atk = 3,
-    windup = 0.5,
-    cooldown = 0.7,
-    ai = "basic",
-    kind = "normal",
+
+  -- 故意让第一次图腾召唤失败，展示 supervise 只重启一次并恢复。
+  local function summon_once(_)
+    meta.summon_attempts = (meta.summon_attempts or 0) + 1
+    if meta.summon_attempts == 1 then
+      world.checks.shaman_supervise_failed = true
+      world.log("【AI·萨满·supervise】%s 首次召唤失败：图腾不稳定", mob.name)
+      return fx.fail("totem_unstable")
+    end
+
+    local add = World.spawn_mob(world, {
+      name = mob.name .. "·图腾灵",
+      hp = 12,
+      atk = 3,
+      windup = 0.5,
+      cooldown = 0.7,
+      ai = "basic",
+      kind = "normal",
+    })
+    meta.adds[#meta.adds + 1] = add
+    world.checks.shaman_summoned = true
+    world.checks.shaman_supervised = true
+    world.log("【AI·萨满·supervise】重启成功，%s 召唤 %s", mob.name, add.name)
+    AI.start(world, add)
+    return Cont.unit(add)
+  end
+
+  return fx.supervise(Cont.unit(true) >> summon_once, {
+    max_restarts = 1,
+    backoff = 0.05,
+    on_fail = function(err)
+      world.log("【AI·萨满·supervise】记录 Failed=%s，准备唯一一次重启", tostring(err))
+    end,
   })
-  meta.adds[#meta.adds + 1] = add
-  world.checks.shaman_summoned = true
-  world.log("【AI·萨满】%s 召唤 %s", mob.name, add.name)
-  AI.start(world, add)
-  return Cont.unit(add)
 end
 
 function AI._shaman_cast(world, mob)
