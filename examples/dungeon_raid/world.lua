@@ -17,7 +17,7 @@ function World.create(sim, opts)
     else
       msg = tostring(fmt)
     end
-    local line = string.format("[t=%.2f] %s", sim:now(), msg)
+    local line = string.format("[模拟 %.2fs] %s", sim:now(), msg)
     log_lines[#log_lines + 1] = line
     if not quiet then
       print(line)
