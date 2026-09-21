@@ -7,6 +7,8 @@
 --
 -- Cont Coro 编码：每个任务 Coro.start；wait 在多任务时登记 deadline（墙钟），
 -- 单任务时可走 handlers.wait（兼容瞬时 mock）；fork 立刻把 handle 还给父任务。
+-- 若 opts.scheduler（或 opts.game）提供，wait 走 schedule/cancel，不再 busy_wait；
+-- session 可异步完成（timer 回调 resume + pump）。
 
 local Coro = require("coro")
 local Cont = require("cont")
@@ -119,6 +121,7 @@ local function alloc_task(nursery, ma)
   local id = nursery.next_id
   local t = {
     id = id,
+    nursery = nursery,
     answer = Coro.start(ma),
     waiting = false,
     deadline = nil,
@@ -134,6 +137,8 @@ local function alloc_task(nursery, ma)
     joiners = {},
     fail_index = nil,
     result = nil,
+    timer_handle = nil,
+    event_handle = nil,
   }
   nursery.tasks[id] = t
   return t
@@ -153,11 +158,50 @@ local function is_runnable(task)
   return not task.finished and not task.waiting and task.parked == nil
 end
 
-local function mark_finished(task)
-  task.finished = true
-  task.waiting = false
+-- 清除 wait / wait_event 占用的 timer / listener；迟到回调靠 cancelled 旗标忽略
+local function clear_task_waits(task)
+  local nursery = task.nursery
+  local opts = (nursery and nursery.opts) or {}
+  local scheduler = opts.scheduler
+  if task._timer_flag then
+    task._timer_flag.cancelled = true
+    task._timer_flag = nil
+  end
+  if task.timer_handle ~= nil then
+    if scheduler and type(scheduler.cancel) == "function" then
+      scheduler.cancel(task.timer_handle)
+    end
+    task.timer_handle = nil
+  end
+  if task._event_flag then
+    task._event_flag.cancelled = true
+    task._event_flag = nil
+  end
+  if task.event_handle ~= nil then
+    local unlisten = task._unlisten or opts.unlisten
+    if unlisten == nil and scheduler then
+      unlisten = scheduler.unlisten
+    end
+    if type(unlisten) == "function" then
+      unlisten(task.event_handle)
+    end
+    task.event_handle = nil
+    task._unlisten = nil
+  end
   task.deadline = nil
+  task.waiting = false
+  task.waiting_event = false
+end
+
+local function mark_finished(task)
+  clear_task_waits(task)
+  task.finished = true
   task.parked = nil
+end
+
+-- 经 with_finally.abort 停任务，保证 finally 执行
+local function force_stop_task_answer(answer, reason)
+  return Coro.force_stop(answer, reason or "cancelled")
 end
 
 -- 前向声明
@@ -171,7 +215,8 @@ local function cancel_siblings(nursery, group, except_id)
     if cid ~= except_id then
       local c = nursery.tasks[cid]
       if c and not c.finished then
-        c.answer = Coro.Stopped("cancelled")
+        clear_task_waits(c)
+        c.answer = force_stop_task_answer(c.answer, "cancelled")
         mark_finished(c)
         -- 不再递归唤醒 joiners（结构化组内取消）
       end
@@ -200,7 +245,8 @@ local function cancel_fork_siblings(nursery, joined_ids, joiner_id, reason)
     if id ~= joiner_id and not joined_ids[id] then
       local t = nursery.tasks[id]
       if t and not t.finished and t.parent_id and parents[t.parent_id] then
-        t.answer = Coro.Stopped(reason)
+        clear_task_waits(t)
+        t.answer = force_stop_task_answer(t.answer, reason)
         -- 标记终态并唤醒仍在等该兄弟的 join 方
         if not t._terminal_handled then
           on_task_terminal(nursery, t, "stopped")
@@ -223,7 +269,8 @@ local function cancel_all_unfinished(nursery, reason)
   for _, id in ipairs(ids) do
     local t = nursery.tasks[id]
     if t and not t.finished then
-      t.answer = Coro.Stopped(reason)
+      clear_task_waits(t)
+      t.answer = force_stop_task_answer(t.answer, reason)
       mark_finished(t)
       t._terminal_handled = true
     end
@@ -515,7 +562,8 @@ drive_until_block = function(nursery, task)
 
   while Coro.isYielded(task.answer) do
     if is_cancelled(opts.cancel) then
-      task.answer = Coro.Stopped("cancelled")
+      clear_task_waits(task)
+      task.answer = force_stop_task_answer(task.answer, "cancelled")
       return "stopped"
     end
     local req = task.answer.value
@@ -527,6 +575,36 @@ drive_until_block = function(nursery, task)
     ------------------------------------------------------------
     if req.kind == "wait" then
       local secs = req.seconds or 0
+      local scheduler = opts.scheduler
+      -- 外部 Scheduler：登记 timer，不 busy_wait；回调里 resume + pump
+      if scheduler ~= nil then
+        local flag = { cancelled = false }
+        local handle = scheduler.schedule(secs, function()
+          if flag.cancelled then
+            return
+          end
+          if task.finished or not task.waiting then
+            return
+          end
+          task.waiting = false
+          task.timer_handle = nil
+          task._timer_flag = nil
+          if opts.verbose_wait then
+            print(string.format("[fx.session] task#%d wait done (scheduler)", task.id))
+          end
+          task.answer = Coro.resume(task.answer, true)
+          if type(opts._pump) == "function" then
+            opts._pump()
+          end
+        end)
+        task.timer_handle = handle
+        task._timer_flag = flag
+        task.waiting = true
+        if opts.verbose_wait then
+          print(string.format("[fx.session] task#%d wait %.3fs (scheduler)", task.id, secs))
+        end
+        return "wait"
+      end
       -- 多任务（含 fork 子任务）走时间轮；单任务走 handlers.wait（兼容瞬时 mock）
       if live_count(nursery) > 1 then
         task.deadline = now() + secs
@@ -677,13 +755,86 @@ drive_until_block = function(nursery, task)
       end
 
     ------------------------------------------------------------
-    -- 其它瞬时效果（connect / click / …）
+    -- wait_event：事件总线 listen；无总线则走 handlers.wait_event
+    ------------------------------------------------------------
+    elseif req.kind == "wait_event" then
+      local scheduler = opts.scheduler
+      local listen = opts.listen
+      if listen == nil and scheduler then
+        listen = scheduler.listen
+      end
+      local unlisten = opts.unlisten
+      if unlisten == nil and scheduler then
+        unlisten = scheduler.unlisten
+      end
+      if type(listen) == "function" then
+        local flag = { cancelled = false }
+        local ev_handle
+        ev_handle = listen(req.name, req.filter, function(payload)
+          if flag.cancelled then
+            return
+          end
+          if task.finished or not task.waiting then
+            return
+          end
+          task.waiting = false
+          task.waiting_event = false
+          task.event_handle = nil
+          task._event_flag = nil
+          task._unlisten = nil
+          if payload == nil then
+            payload = true
+          end
+          task.answer = Coro.resume(task.answer, payload)
+          if type(opts._pump) == "function" then
+            opts._pump()
+          end
+        end)
+        task.event_handle = ev_handle
+        task._event_flag = flag
+        task._unlisten = unlisten
+        task.waiting = true
+        task.waiting_event = true
+        return "wait"
+      else
+        local handler = handlers.wait_event
+        assert(handler, "fx_sched: no handler for kind=wait_event (and no listen)")
+        local next_input = handler(req)
+        task.answer = Coro.resume(task.answer, next_input)
+      end
+
+    ------------------------------------------------------------
+    -- 其它效果（connect / click / 自定义 kind …）
+    -- opts.async_kinds[kind]=true 时：handler(req, resume_cb)，异步兑现
     ------------------------------------------------------------
     else
       local handler = handlers[req.kind]
       assert(handler, "fx_sched: no handler for kind=" .. tostring(req.kind))
-      local next_input = handler(req)
-      task.answer = Coro.resume(task.answer, next_input)
+      local async_kinds = opts.async_kinds or handlers.__async_kinds
+      local is_async = async_kinds and async_kinds[req.kind]
+      if is_async then
+        local flag = { cancelled = false }
+        task._timer_flag = flag -- 复用取消旗标（无 timer 时仅作 cancelled）
+        task.waiting = true
+        handler(req, function(next_input)
+          if flag.cancelled then
+            return
+          end
+          if task.finished or not task.waiting then
+            return
+          end
+          task.waiting = false
+          task._timer_flag = nil
+          task.answer = Coro.resume(task.answer, next_input)
+          if type(opts._pump) == "function" then
+            opts._pump()
+          end
+        end)
+        return "wait"
+      else
+        local next_input = handler(req)
+        task.answer = Coro.resume(task.answer, next_input)
+      end
     end
   end
 
@@ -698,17 +849,37 @@ drive_until_block = function(nursery, task)
 end
 
 ------------------------------------------------------------
--- run_session：驱动整棵 nursery，直到 root 终态
+-- start_session / run_session
+--   start_session → flow handle（可异步）；timer/事件回调里 pump
+--   run_session：无 scheduler 时阻塞到终态（busy_wait）；有 scheduler 时
+--     若已终态返回 result，否则返回 flow（由 GameSim.tick / advance 推进）
 ------------------------------------------------------------
 
-function M.run_session(ma, handlers, opts)
+local function normalize_sched_opts(opts)
   opts = opts or {}
+  -- opts.game 可作为 Scheduler（GameSim 同时提供 now/schedule/cancel/listen）
+  if opts.scheduler == nil and opts.game ~= nil then
+    opts.scheduler = opts.game
+  end
+  return opts
+end
+
+function M.start_session(ma, handlers, opts)
+  opts = normalize_sched_opts(opts)
   handlers = handlers or {}
-  assert(ma ~= nil, "fx_sched.run_session: ma required")
+  assert(ma ~= nil, "fx_sched.start_session: ma required")
 
   local nursery = new_nursery(handlers, opts)
   local root = alloc_task(nursery, ma)
   nursery.root_id = root.id
+
+  local flow = {
+    _is_flow = true,
+    done = false,
+    result = nil,
+    nursery = nursery,
+    root = root,
+  }
 
   local function result_of_root()
     local a = root.answer
@@ -730,130 +901,212 @@ function M.run_session(ma, handlers, opts)
     error("fx_sched: root not terminal")
   end
 
-  while not root.finished do
-    if is_cancelled(opts.cancel) then
-      -- 取消传播树：停止全部未完成子任务（含 fork / when_all / map_parallel worker）
-      cancel_all_unfinished(nursery, "cancelled")
-      root.answer = Coro.Stopped("cancelled")
-      root.finished = true
-      return { ok = false, stopped = true, reason = "cancelled" }
-    end
+  local function settle_done()
+    flow.done = true
+    flow.result = result_of_root()
+    return flow.result
+  end
 
-    -- 推进所有可运行任务（含本轮 fork 出的子任务）
-    local progressed = true
-    while progressed do
-      progressed = false
-      -- 快照 id 列表，避免 pairs 中插入干扰
-      local ids = {}
-      for id, _ in pairs(nursery.tasks) do
-        ids[#ids + 1] = id
-      end
-      table.sort(ids)
-      for _, id in ipairs(ids) do
-        local task = nursery.tasks[id]
-        if task and is_runnable(task) then
-          local st = drive_until_block(nursery, task)
-          progressed = true
-          if st == "done" or st == "stopped" or st == "failed" then
-            on_task_terminal(nursery, task, st)
-          end
-          -- parked / wait：已设标志，下一轮再看
-        end
-      end
-      if root.finished then
-        return result_of_root()
-      end
-    end
+  local pumping = false
 
-    if root.finished then
-      return result_of_root()
+  local function pump()
+    if flow.done then
+      return flow.result
     end
-
-    -- 收集 wait deadline
-    local min_dl = nil
-    local any_waiting = false
-    for _, task in pairs(nursery.tasks) do
-      if not task.finished and task.waiting and task.deadline then
-        any_waiting = true
-        if min_dl == nil or task.deadline < min_dl then
-          min_dl = task.deadline
-        end
-      end
+    if pumping then
+      -- 重入：timer 回调里又 pump；外层循环会继续扫
+      return nil
     end
+    pumping = true
 
-    if not any_waiting then
-      -- 无 wait：应有可运行或 park（等子任务）。若全 park 且子皆终态却未唤醒 → 死锁
-      local any_runnable = false
-      local any_parked = false
-      for _, task in pairs(nursery.tasks) do
-        if is_runnable(task) then
-          any_runnable = true
+    local function drive_runnables()
+      local progressed = true
+      while progressed do
+        progressed = false
+        local ids = {}
+        for id, _ in pairs(nursery.tasks) do
+          ids[#ids + 1] = id
         end
-        if not task.finished and task.parked then
-          any_parked = true
-        end
-      end
-      if any_runnable then
-        -- 回到外层 while 再推
-      elseif any_parked then
-        -- 可能子任务刚被 spawn 尚未 drive；再扫一轮
-        local drove = false
-        for _, task in pairs(nursery.tasks) do
-          if is_runnable(task) then
-            drove = true
-            break
-          end
-        end
-        if not drove then
-          -- 检查是否有未完成且未 park/wait 的——没有则死锁
-          error("fx_sched: deadlock — parked tasks with no runnable children")
-        end
-      else
-        error("fx_sched: deadlock — unfinished tasks not waiting")
-      end
-    else
-      local sleep_for = min_dl - now()
-      if sleep_for > 0 then
-        busy_wait(sleep_for)
-      end
-      local tnow = now()
-      local due = {}
-      for _, task in pairs(nursery.tasks) do
-        if not task.finished and task.waiting and task.deadline
-            and task.deadline <= tnow + 1e-9 then
-          due[#due + 1] = task
-        end
-      end
-      if #due == 0 then
-        local best
-        for _, task in pairs(nursery.tasks) do
-          if not task.finished and task.waiting and task.deadline then
-            if best == nil or task.deadline < best.deadline then
-              best = task
+        table.sort(ids)
+        for _, id in ipairs(ids) do
+          local task = nursery.tasks[id]
+          if task and is_runnable(task) then
+            local st = drive_until_block(nursery, task)
+            progressed = true
+            if st == "done" or st == "stopped" or st == "failed" then
+              on_task_terminal(nursery, task, st)
             end
           end
         end
-        if best then
-          due[1] = best
+        if root.finished then
+          return true
+        end
+      end
+      return root.finished
+    end
+
+    while not flow.done do
+      if is_cancelled(opts.cancel) then
+        cancel_all_unfinished(nursery, "cancelled")
+        if not root.finished then
+          root.answer = force_stop_task_answer(root.answer, "cancelled")
+          mark_finished(root)
+          root._terminal_handled = true
+        end
+        flow.done = true
+        flow.result = { ok = false, stopped = true, reason = "cancelled" }
+        pumping = false
+        return flow.result
+      end
+
+      if drive_runnables() then
+        pumping = false
+        return settle_done()
+      end
+
+      -- 墙钟 deadline 等待（无外部 scheduler 时）
+      local min_dl = nil
+      local any_deadline = false
+      local any_ext_wait = false -- scheduler timer / wait_event / async kind
+      for _, task in pairs(nursery.tasks) do
+        if not task.finished and task.waiting then
+          if task.deadline then
+            any_deadline = true
+            if min_dl == nil or task.deadline < min_dl then
+              min_dl = task.deadline
+            end
+          else
+            any_ext_wait = true
+          end
         end
       end
 
-      for _, task in ipairs(due) do
-        task.waiting = false
-        task.deadline = nil
-        if opts.verbose_wait then
-          print(string.format("[fx.session] task#%d wait done", task.id))
+      if any_deadline and opts.scheduler == nil then
+        local sleep_for = min_dl - now()
+        if sleep_for > 0 then
+          busy_wait(sleep_for)
         end
-        task.answer = Coro.resume(task.answer, true)
-        local st = drive_until_block(nursery, task)
-        if st == "done" or st == "stopped" or st == "failed" then
-          on_task_terminal(nursery, task, st)
+        local tnow = now()
+        local due = {}
+        for _, task in pairs(nursery.tasks) do
+          if not task.finished and task.waiting and task.deadline
+              and task.deadline <= tnow + 1e-9 then
+            due[#due + 1] = task
+          end
+        end
+        if #due == 0 then
+          local best
+          for _, task in pairs(nursery.tasks) do
+            if not task.finished and task.waiting and task.deadline then
+              if best == nil or task.deadline < best.deadline then
+                best = task
+              end
+            end
+          end
+          if best then
+            due[1] = best
+          end
+        end
+        for _, task in ipairs(due) do
+          task.waiting = false
+          task.deadline = nil
+          if opts.verbose_wait then
+            print(string.format("[fx.session] task#%d wait done", task.id))
+          end
+          task.answer = Coro.resume(task.answer, true)
+          local st = drive_until_block(nursery, task)
+          if st == "done" or st == "stopped" or st == "failed" then
+            on_task_terminal(nursery, task, st)
+          end
+        end
+        -- 继续 while，再 drive
+      elseif any_ext_wait or any_deadline then
+        -- 有外部 scheduler：阻塞在 timer/事件上，交还控制权
+        pumping = false
+        return nil
+      else
+        local any_runnable = false
+        local any_parked = false
+        for _, task in pairs(nursery.tasks) do
+          if is_runnable(task) then
+            any_runnable = true
+          end
+          if not task.finished and task.parked then
+            any_parked = true
+          end
+        end
+        if any_runnable then
+          -- 再推一轮
+        elseif any_parked then
+          local drove = false
+          for _, task in pairs(nursery.tasks) do
+            if is_runnable(task) then
+              drove = true
+              break
+            end
+          end
+          if not drove then
+            pumping = false
+            error("fx_sched: deadlock — parked tasks with no runnable children")
+          end
+        else
+          pumping = false
+          error("fx_sched: deadlock — unfinished tasks not waiting")
         end
       end
     end
+
+    pumping = false
+    return flow.result
   end
 
-  return result_of_root()
+  flow.pump = pump
+  flow.cancel = function(reason)
+    reason = reason or "cancelled"
+    if flow.done then
+      return flow.result
+    end
+    cancel_all_unfinished(nursery, reason)
+    if not root.finished then
+      root.answer = force_stop_task_answer(root.answer, reason)
+      mark_finished(root)
+      root._terminal_handled = true
+    end
+    flow.done = true
+    flow.result = { ok = false, stopped = true, reason = reason }
+    return flow.result
+  end
+
+  function flow.is_done()
+    return flow.done
+  end
+
+  opts._pump = pump
+  nursery.opts = opts -- 确保 clear_task_waits 见到 _pump/scheduler
+  pump()
+  return flow
+end
+
+function M.run_session(ma, handlers, opts)
+  opts = normalize_sched_opts(opts)
+  local flow = M.start_session(ma, handlers, opts)
+  if flow.done then
+    return flow.result
+  end
+  if opts.scheduler ~= nil then
+    -- 异步：返回 flow handle，由外部 tick / advance 推进
+    return flow
+  end
+  -- 无 scheduler：start_session 的 pump 应已通过 busy_wait 跑完
+  -- 若仍未完成（理论上不应），再 pump 直到 done
+  while not flow.done do
+    local r = flow.pump()
+    if r ~= nil then
+      return r
+    end
+    error("fx_sched.run_session: blocked without scheduler")
+  end
+  return flow.result
 end
 
 ------------------------------------------------------------
@@ -887,6 +1140,10 @@ function M.run_parallel(tasks, handlers, opts, mode)
   end
 
   local r = M.run_session(body, handlers, opts)
+  -- 异步 flow：原样返回，由调用方 tick
+  if type(r) == "table" and r._is_flow then
+    return r
+  end
   if not r.ok then
     return r
   end

@@ -14,7 +14,7 @@
 1. [CPS 设计与工作原理](docs/CPS设计与原理.md) — Cont、callCC、定界续延、协程三层模型  
 2. [Cont 环境组合](docs/Cont环境组合.md) — `withEnv`、属性、`AfterStep`  
 3. [异步效果同步写法](docs/异步效果同步写法.md) — `fx.wait` / `connect` / `click`；**并行** `when_all`/`when_any`；**Fork/Join** `fork`/`join`  
-4. [工程对接与后续](docs/工程对接与后续.md) — 游戏时间 Scheduler、与 session 调度器分层、正式工程对接与 P0–P2  
+4. [工程对接与后续](docs/工程对接与后续.md) — 游戏时间 Scheduler、**GameSim 参考宿主**、正式工程对接与 P0–P2  
 5. [设计说明](docs/设计说明.md) · [API 参考](docs/API.md)
 
 需要 **Lua 5.4+**；在仓库根目录执行示例（脚本已设置 `package.path`）。

@@ -1759,6 +1759,111 @@ do
 end
 
 ------------------------------------------------------------
+-- GameSim / scheduler：游戏时间 wait、pause、cancel、wait_event、实体 finally
+------------------------------------------------------------
+do
+  local fx = require("fx")
+  local GameSim = require("game_sim")
+  local Scheduler = require("scheduler")
+
+  -- 无 scheduler：旧行为仍可用（忙等路径存在即可）
+  local r0 = fx.run(fx.wait(0.001) >> function(_) return Cont.unit(42) end, {
+    wait = function() return true end,
+  })
+  assert_true(r0.ok and r0.value == 42, "fx.run without scheduler still works")
+
+  -- VirtualClock + start_session
+  local clock = Scheduler.VirtualClock()
+  local flow = require("fx_sched").start_session(
+    fx.wait(0.5) >> function(_) return Cont.unit("v") end,
+    {},
+    { scheduler = clock }
+  )
+  assert_true(not flow.done, "virtual: not done before advance")
+  clock.advance(0.4)
+  assert_true(not flow.done, "virtual: still waiting")
+  clock.advance(0.1)
+  assert_true(flow.done and flow.result.ok and flow.result.value == "v", "virtual: done after advance")
+
+  -- 游戏时间 wait
+  local sim = GameSim.new({ dt = 0.1 })
+  local r = sim:run(fx.wait(0.3) >> function(_) return Cont.unit(sim:now()) end)
+  assert_true(r.ok and r.value >= 0.3 - 1e-9, "game wait value")
+  assert_true(sim:now() >= 0.3 - 1e-9, "game wait now")
+
+  -- pause 推迟
+  sim = GameSim.new({ dt = 0.1 })
+  flow = sim:start_flow(nil, fx.wait(0.4) >> function(_) return Cont.unit(true) end)
+  sim:tick(0.2)
+  sim:set_paused(true)
+  local t_paused = sim:now()
+  sim:tick(1.0)
+  assert_true(sim:now() == t_paused, "pause freezes time")
+  assert_true(not flow.done, "pause defers wait")
+  sim:set_paused(false)
+  sim:tick(0.2)
+  assert_true(flow.done and flow.result.ok, "resume after pause")
+
+  -- cancel 清 timer；迟到回调忽略
+  sim = GameSim.new({ dt = 0.1 })
+  local late = false
+  local handle = sim.schedule(0.5, function() late = true end)
+  sim.cancel(handle)
+  sim:tick(1.0)
+  assert_true(late == false, "cancelled timer ignored")
+
+  sim = GameSim.new({ dt = 0.1 })
+  local resumed = false
+  flow = sim:start_flow(nil, fx.wait(1.0) >> function(_)
+    resumed = true
+    return Cont.unit(true)
+  end)
+  assert_true(not flow.done, "wait pending before cancel")
+  flow.cancel("bye")
+  assert_true(flow.done and flow.result.stopped, "flow cancelled")
+  sim:tick(2.0)
+  assert_true(resumed == false, "cancelled wait not resumed")
+
+  -- wait_event
+  sim = GameSim.new()
+  flow = sim:start_flow(nil, fx.wait_event("go") >> function(p)
+    return Cont.unit(p)
+  end)
+  assert_true(not flow.done, "wait_event pending")
+  sim:emit("go", { n = 7 })
+  assert_true(flow.done and flow.result.ok and flow.result.value.n == 7, "wait_event resume")
+
+  -- 实体销毁跑 finally
+  sim = GameSim.new({ dt = 0.05 })
+  local fin = false
+  local ent = sim:spawn_entity("e")
+  local life = Cont.withEnv(function(_ENV)
+    function work(_)
+      return fx.wait(5) >> function(_) return Cont.unit(1) end
+    end
+    function finally(outcome)
+      fin = outcome.status == "stopped" and outcome.reason == "entity_destroyed"
+      return true
+    end
+  end)
+  flow = sim:start_flow(ent, life(nil))
+  sim:tick(0.05)
+  sim:destroy_entity(ent.id)
+  assert_true(flow.done and flow.result.stopped, "entity destroy stopped")
+  assert_true(fin, "entity destroy runs finally")
+
+  -- when_all 游戏时间并行
+  sim = GameSim.new({ dt = 0.05 })
+  r = sim:run(fx.when_all({
+    fx.wait(0.2) >> function(_) return Cont.unit(1) end,
+    fx.wait(0.4) >> function(_) return Cont.unit(2) end,
+  }))
+  assert_true(r.ok and r.value[1] == 1 and r.value[2] == 2, "when_all game values")
+  assert_true(sim:now() >= 0.4 - 1e-9 and sim:now() < 0.55, "when_all game time ~ max")
+end
+
+
+------------------------------------------------------------
 io.stdout:write("\n")
 if failures > 0 then
   io.stderr:write(failures .. " failure(s)\n")

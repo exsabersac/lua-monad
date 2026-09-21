@@ -100,6 +100,16 @@ local function resume(y, b)
   return y.cont(b)
 end
 
+-- force_stop : Answer → reason → Answer
+-- 若 Yielded 带 with_finally 注入的 abort，则跑 finally 再 Stopped；否则直接 Stopped。
+-- 供 session cancel / 实体销毁使用，避免裸写 Stopped 跳过清理。
+local function force_stop(answer, reason)
+  if isYielded(answer) and type(answer.abort) == "function" then
+    return answer.abort(reason)
+  end
+  return Stopped(reason)
+end
+
 -- step : Answer → b → Answer
 -- 安全驱动：Done / Stopped / Failed 原样返回；Yielded 则 resume
 local function step(answer, value)
@@ -180,6 +190,7 @@ return {
   fail = fail,
   start = start,
   resume = resume,
+  force_stop = force_stop,
   step = step,
   run = run,
   runEx = runEx,

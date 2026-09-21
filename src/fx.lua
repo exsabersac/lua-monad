@@ -11,6 +11,8 @@
 --   7. fx.with_timeout：与 wait(deadline) 竞速；超时 → Failed("timeout")（可自定义）。
 --   8. 取消传播树：session cancel 停止未完成子任务；join 可选 cancel_siblings。
 --   9. 这不是真实网络/UI；默认 handlers 只是 mock，便于演示与测试。
+--  10. opts.scheduler / opts.game：外部游戏时间后端；wait 走 schedule，不 busy_wait。
+--  11. fx.wait_event：由 GameSim.emit / listen 兑现。
 --
 -- 重要区分：
 --   Cont 上的 Coro.yield ≠ Lua 原生 coroutine.yield。
@@ -35,6 +37,19 @@ function fx.wait(seconds)
   seconds = seconds or 0
   return Coro.yield({ kind = "wait", seconds = seconds }) >> function(_resume)
     return Cont.unit(true)
+  end
+end
+
+-- wait_event : name → filter? → Cont Answer payload
+-- 挂起 { kind="wait_event", name, filter? }；GameSim.emit 匹配后 resume
+function fx.wait_event(name, filter)
+  assert(name ~= nil, "fx.wait_event: name required")
+  local req = { kind = "wait_event", name = name }
+  if filter ~= nil then
+    req.filter = filter
+  end
+  return Coro.yield(req) >> function(payload)
+    return Cont.unit(payload)
   end
 end
 
@@ -344,6 +359,11 @@ function fx.run_parallel(tasks, handlers, opts)
   local sched_opts = {
     cancel = opts.cancel,
     verbose_wait = opts.verbose_wait,
+    scheduler = opts.scheduler or opts.game,
+    game = opts.game,
+    listen = opts.listen,
+    unlisten = opts.unlisten,
+    async_kinds = opts.async_kinds or h.__async_kinds,
   }
   return Sched.run_parallel(tasks, h, sched_opts, mode)
 end
@@ -383,9 +403,18 @@ end
 function fx.run(ma, handlers, opts)
   opts = opts or {}
   local h = merge_handlers(handlers)
+  -- 合并用户传入的异步 kind 标记
+  if type(handlers) == "table" and type(handlers.__async_kinds) == "table" then
+    h.__async_kinds = handlers.__async_kinds
+  end
   return Sched.run_session(ma, h, {
     cancel = opts.cancel,
     verbose_wait = opts.verbose_wait,
+    scheduler = opts.scheduler or opts.game,
+    game = opts.game,
+    listen = opts.listen,
+    unlisten = opts.unlisten,
+    async_kinds = opts.async_kinds or h.__async_kinds,
   })
 end
 

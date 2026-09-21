@@ -339,11 +339,23 @@ function cont_env.with_finally(ma, cleanup)
     local function wrap_result(res)
       local tag = answer_tag(res)
       if tag == "yielded" then
+        -- abort：外部 cancel 时走清理而不 resume 业务续延（迟到 timer 忽略另案）
         return {
           tag = "yielded",
           value = res.value,
           cont = function(b)
             return wrap_result(res.cont(b))
+          end,
+          abort = function(reason)
+            if type(res.abort) == "function" then
+              local inner = res.abort(reason)
+              return run_cleanup_then({ status = "stopped", reason = reason }, function()
+                return inner
+              end)
+            end
+            return run_cleanup_then({ status = "stopped", reason = reason }, function()
+              return { tag = "stopped", reason = reason }
+            end)
           end,
         }
       end
