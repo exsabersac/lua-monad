@@ -2,7 +2,7 @@
 
 仓库根目录下运行（`package.path` 已含 `src/?.lua`；场景工具另加 `tools/?.lua`）。目标解释器：**Lua 5.3**。
 
-一页速查（全命令 copy-paste）：[`docs/工具速查.md`](../docs/工具速查.md)。
+一页速查（全命令 copy-paste）：[`docs/工具速查.md`](../docs/工具速查.md)。套件收口（inventory / 工作流 / 勿用 wait_real）：[`docs/工具套件收口.md`](../docs/工具套件收口.md)。
 
 | 工具 | 作用 |
 |------|------|

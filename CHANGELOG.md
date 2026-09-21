@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.16-eng — 2026-09-21
+
+- **性能基线刷新**
+  - 本机重种 [`tools/bench_baseline.json`](tools/bench_baseline.json)：`lua5.3 tools/bench_compare.lua --write-baseline`（默认 N=20000）
+- **工具套件收口文档**
+  - 新增 [`docs/工具套件收口.md`](docs/工具套件收口.md)：全工具 inventory（bench / compare / alloc / doctor / trace_dump·export / profile_flow / scenarios / ci_tools / mdo）、日常与 CI 工作流、**游戏时间勿用 `fx.wait_real`**
+  - [`docs/版本与路线.md`](docs/版本与路线.md) 增「工具套件」节并标记 eng 工具波次完成
+- **无 Tab DSL**；eng 工具波次视为完成（再发现 bug 按单点修）
+
 ## 0.2.15-eng — 2026-09-21
 
 - **共享场景模块（`tools/scenarios/`）**
