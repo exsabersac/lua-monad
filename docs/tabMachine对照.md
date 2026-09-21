@@ -2,9 +2,32 @@
 
 目标：**对齐有用的 tabMachine 能力子集**，不是完整克隆。  
 参考概念来自 ThinEureka/tabMachine（abort/stop、iquit、seq、suspend、join/select）。  
-版本：**0.2.10-eng**。
+版本：**0.2.10-eng**；路线收口见 [版本与路线](版本与路线.md)。
 
 图例：✅ 已对齐　🔶 部分／语义近似　❌ 本轮有意不做
+
+## Parity scorecard（0.2.10-eng）
+
+本仓库的目标是**对齐有用的 tabMachine 能力子集**，不是完整克隆。下面的“已完成”指已有 API、宿主路径和回归覆盖；“有意推迟”是路线边界，不是本轮缺陷。
+
+### 已完成
+
+| 能力面 | 当前入口 | 对齐口径 |
+|--------|----------|----------|
+| 退出与生命周期 | `fx.stop` / `fx.abort` / `flow.cancel`、`iquit`、`finally` | stop、abort、cancel 的终态分开；退出清理顺序明确 |
+| 组合与并发 | `fx.seq`、`fx.join`、`fx.when_all` / `fx.when_any` | 串联、汇合、竞速和 abort 传播可用 |
+| 挂起控制 | `flow:suspend()` / `resume()` | 按 flow 冻结 wait/timer/poll，不等同全局暂停 |
+| 命名多行 | `fx.lane` / `fx.lanes` / `fx.lane_join` | 轻量对照 `c:start`；同一 session 内命名 fork |
+| 外部代理 | `fx.proxy` / `flow:proxy`、`proxy_join` / `stop` / `abort` | 轻量对照 `tabProxy`；可跨 session 等待和取消 |
+| 工程协作 | `fx.chan`、Scheduler、实体绑定 | mailbox、游戏时间和销毁取消均有工程入口 |
+
+### 有意推迟（不阻塞工程可用）
+
+| 对照项 | 当前替代 | 明确边界 |
+|--------|----------|----------|
+| **完整 tab DSL / tab 树** | Cont/CPS、lane、proxy | 不实现完整代理树，也不转发 proxy output/事件链 |
+| **`xx_update` 标签作为一等语义** | `fx.wait_until` / `schedule_poll` | 不建立每帧标签调度 DSL；轮询通过现有 Scheduler 表达 |
+| **UI binding tree** | Unity handler、`fx.bind_entity`、业务生命周期 | 不复制 tabMachine 的 UI 绑定树和事件/UI DSL |
 
 ---
 
