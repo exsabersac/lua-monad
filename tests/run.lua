@@ -1893,6 +1893,9 @@ do
   assert_true(r.checks.chests_parallel, "dungeon chests_parallel")
   assert_eq(r.boss_path, "interrupt", "dungeon boss_path interrupt")
   assert_true(r.hp > 0 and r.rooms >= 3, "dungeon hp/rooms")
+  local c = r.checks
+  assert_true(c.berserker_enraged or c.shaman_interrupted or c.assassin_ambush,
+    "dungeon complex AI flag")
 end
 
 

@@ -43,6 +43,12 @@ function World.create(sim, opts)
       chests_parallel = false,
       boss_path = nil, -- "interrupt" | "timeout"
       victory = false,
+      -- 复杂 AI 标志（至少其一应在完整通关中为 true）
+      berserker_enraged = false,
+      shaman_interrupted = false,
+      shaman_summoned = false,
+      assassin_ambush = false,
+      assassin_broken = false,
     },
     flags = {
       ready_for_pause = false,
@@ -65,6 +71,8 @@ function World.player_alive(world)
 end
 
 --- 生成一只怪：sim 实体 + 战斗数据
+-- spec.ai： "basic"|"berserker"|"shaman"|"assassin"（优先于 kind 分发）
+-- spec.kind： "normal"|"boss"（叙事/兼容）
 function World.spawn_mob(world, spec)
   local sim = world.sim
   local ent = sim:spawn_entity(spec.name or "mob")
@@ -78,13 +86,20 @@ function World.spawn_mob(world, spec)
     windup = spec.windup or 0.35,
     cooldown = spec.cooldown or 0.55,
     kind = spec.kind or "normal", -- normal | boss
+    ai = spec.ai, -- berserker | shaman | assassin | basic | nil→basic
+    cast_time = spec.cast_time,
+    heal_amount = spec.heal_amount,
+    stealth_time = spec.stealth_time,
+    ambush_delay = spec.ambush_delay,
   }
   world.mob_meta[mob.id] = {
     finally_ran = false,
     dropped = false,
     name = mob.name,
+    ai = mob.ai,
   }
-  world.log("生成 %s (id=%d hp=%d atk=%d)", mob.name, mob.id, mob.hp, mob.atk)
+  world.log("生成 %s (id=%d hp=%d atk=%d ai=%s)",
+    mob.name, mob.id, mob.hp, mob.atk, tostring(mob.ai or mob.kind or "basic"))
   return mob
 end
 

@@ -32,15 +32,19 @@ end
 ------------------------------------------------------------
 
 local function room1_corridor(world)
+  -- 刺客：快速展示潜行 + when_any 伏击 / 被砍取消
   local mob = World.spawn_mob(world, {
-    name = "地精斥候",
-    hp = 30,
-    atk = 6,
-    windup = 0.4,
-    cooldown = 0.6,
+    name = "暗影刺客",
+    hp = 55,
+    atk = 10,
+    windup = 0.35,
+    cooldown = 0.5,
+    ai = "assassin",
+    stealth_time = 0.05,
+    ambush_delay = 0.08, -- 伏击约 @0.13s，早于玩家首刀(~0.20s)
   })
   AI.start(world, mob)
-  world.log("==== 房间 1：阴湿走廊 ====")
+  world.log("==== 房间 1：阴湿走廊（刺客）====")
   return Combat.fight_one(world, mob) >> function(_)
     world.rooms_cleared = world.rooms_cleared + 1
     world.log("走廊肃清。hp=%d", world.player.hp)
@@ -59,24 +63,28 @@ local function travel_and_pause_flag(world)
 end
 
 local function room2_undead(world)
-  world.log("==== 房间 2：骸骨密室 ====")
+  world.log("==== 房间 2：骸骨密室（狂战士 + 萨满）====")
   local a = World.spawn_mob(world, {
-    name = "骷髅剑士",
-    hp = 35,
-    atk = 8,
-    windup = 0.35,
-    cooldown = 0.5,
+    name = "骸骨狂战士",
+    hp = 55,
+    atk = 9,
+    windup = 0.4,
+    cooldown = 0.55,
+    ai = "berserker",
   })
   local b = World.spawn_mob(world, {
-    name = "骷髅弓手",
-    hp = 28,
-    atk = 7,
-    windup = 0.45,
-    cooldown = 0.55,
+    name = "骨巫萨满",
+    hp = 48,
+    atk = 6,
+    windup = 0.3,
+    cooldown = 0.35,
+    ai = "shaman",
+    cast_time = 0.7,
+    heal_amount = 10,
   })
   AI.start(world, a)
   AI.start(world, b)
-  -- 多怪并行：when_all
+  -- 多怪并行：when_all（两侧复杂 AI 同时跑）
   return Combat.fight_mobs_parallel(world, { a, b }) >> function(_)
     world.rooms_cleared = world.rooms_cleared + 1
     world.log("密室肃清。hp=%d", world.player.hp)
@@ -250,6 +258,11 @@ local function run_asserts(world, flow_result, opts)
   need(flow_result and flow_result.ok, "main flow should Done ok")
   need(World.player_alive(world), "player alive")
   need(world.rooms_cleared >= 3, "three rooms cleared")
+
+  -- 复杂 AI：完整通关应至少触发狂暴 / 打断 / 伏击之一
+  local complex = C.berserker_enraged or C.shaman_interrupted or C.assassin_ambush
+  need(complex,
+    "expected berserker_enraged or shaman_interrupted or assassin_ambush")
 
   -- 至少一只怪 finally_ran
   local any_fin = false

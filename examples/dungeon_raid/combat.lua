@@ -38,6 +38,8 @@ function Combat.fight_one(world, mob)
         return Cont.unit("killed_by_other")
       end
       mob.hp = mob.hp - player.atk
+      -- 供萨满打断 / 刺客潜行窗口监听
+      sim:emit("player_slash", { id = mob.id, target_id = mob.id, dmg = player.atk })
       world.log("【战斗】你对 %s 造成 %d 伤害（余 hp=%d）",
         mob.name, player.atk, math.max(mob.hp, 0))
       if mob.hp <= 0 then
