@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.10-eng — 2026-09-21
+
+- **轻量 flow/lane proxy（≈ tabMachine tabProxy）**
+  - `fx.proxy(name|handle|flow, opts?)`：外部 wait/stop 句柄，**不拥有** Cont
+  - `flow:proxy(opts?)`：整段 session 的 proxy
+  - `fx.proxy_join(p)`：等到目标 Done/Failed/Stopped/Aborted（复用 fork/join `joiners`）
+  - `fx.proxy_stop(p)` / `fx.proxy_abort(p)`：合作式停止 / 异常中止；resume `true`/`false`
+  - `opts.stop_host_when_stop`：`proxy_join` 等待方被取消时反向停止目标（≈ tabProxy 反向链接）
+  - 未知目标 → Failed `{tag=proxy_unknown}`；跨 session 等 flow 经 `_proxy_joiners` 唤醒
+- Session yield：`proxy_join` / `proxy_stop` / `proxy_abort`；`fx_registry.STANDARD_KINDS`
+- 文档：[`tabMachine对照.md`](docs/tabMachine对照.md) 映射 tabProxy；API / 验收
+- 测试：名/handle/flow join、stop/abort、unknown、跨 session、stop_host_when_stop
+
 ## 0.2.9-eng — 2026-09-21
 
 - **命名 lane（轻量 tabMachine 多行）**

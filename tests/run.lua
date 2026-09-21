@@ -3093,6 +3093,136 @@ end
 
 
 
+
+
+------------------------------------------------------------
+-- fx：轻量 proxy（tabMachine tabProxy 对照）
+------------------------------------------------------------
+do
+  io.stdout:write("fx.proxy... ")
+  local Cont = require("cont")
+  local fx = require("fx")
+  local Registry = require("fx_registry")
+  local Sched = require("fx_sched")
+  local Scheduler = require("scheduler")
+
+  assert_true(Registry.STANDARD_KINDS.proxy_join ~= nil, "STANDARD_KINDS.proxy_join")
+  assert_true(type(fx.proxy) == "function", "fx.proxy exists")
+  assert_true(type(fx.proxy_join) == "function", "fx.proxy_join exists")
+
+  -- name proxy + join
+  local r = fx.run(
+    fx.lane("t1", Cont.unit(7)) >> function(_)
+      return fx.proxy_join(fx.proxy("t1"))
+    end
+  )
+  assert_true(r.ok and r.value == 7, "proxy name join")
+
+  -- handle proxy
+  r = fx.run(
+    fx.fork(Cont.unit(42)) >> function(h)
+      local p = fx.proxy(h)
+      assert_true(p._is_proxy and p.id == h.id, "proxy from handle")
+      return fx.proxy_join(p)
+    end
+  )
+  assert_true(r.ok and r.value == 42, "proxy handle join")
+
+  -- proxy_stop → Stopped
+  r = fx.run(
+    fx.lane("slow", fx.wait(1.0) >> function(_) return Cont.unit("no") end) >> function(_)
+      local p = fx.proxy("slow")
+      return fx.proxy_stop(p, "bye") >> function(ok)
+        assert_true(ok == true, "proxy_stop was running")
+        return fx.proxy_join(p)
+      end
+    end
+  )
+  assert_true(r.stopped and r.reason == "bye", "proxy_stop → Stopped")
+
+  -- proxy_abort → Aborted
+  r = fx.run(
+    fx.lane("bad", fx.wait(1.0) >> function(_) return Cont.unit("x") end) >> function(_)
+      return fx.proxy_abort(fx.proxy("bad"), "kaboom") >> function(ok)
+        assert_true(ok == true, "proxy_abort was running")
+        return fx.proxy_join(fx.proxy("bad"))
+      end
+    end
+  )
+  assert_true(r.aborted and r.reason == "kaboom", "proxy_abort → Aborted")
+
+  -- unknown
+  r = fx.run(fx.proxy_join(fx.proxy("nope")))
+  assert_true(r.failed and type(r.error) == "table" and r.error.tag == "proxy_unknown",
+    "proxy_unknown")
+
+  -- stop unknown → false
+  r = fx.run(fx.proxy_stop(fx.proxy("ghost")) >> function(ok)
+    return Cont.unit(ok)
+  end)
+  assert_true(r.ok and r.value == false, "proxy_stop unknown → false")
+
+  -- flow:proxy 跨 session（VirtualClock）
+  local clock = Scheduler.VirtualClock()
+  local flow = Sched.start_session(
+    fx.wait(0.05) >> function(_) return Cont.unit("done") end,
+    {},
+    { scheduler = clock }
+  )
+  assert_true(type(flow.proxy) == "function", "flow.proxy method")
+  local p = flow:proxy()
+  assert_true(p._is_proxy and p.flow == flow, "flow:proxy shape")
+  local waiter = Sched.start_session(
+    fx.proxy_join(p) >> function(v) return Cont.unit(v) end,
+    {},
+    { scheduler = clock }
+  )
+  assert_true(not flow.done and not waiter.done, "both pending")
+  clock.advance(0.1)
+  assert_true(flow.done and flow.result.ok, "host flow done")
+  assert_true(waiter.done and waiter.result.ok and waiter.result.value == "done",
+    "cross-session proxy_join")
+
+  -- stop_host_when_stop：取消等待方 → 停 host flow
+  clock = Scheduler.VirtualClock()
+  flow = Sched.start_session(
+    fx.wait(5.0) >> function(_) return Cont.unit("late") end,
+    {},
+    { scheduler = clock }
+  )
+  waiter = Sched.start_session(
+    fx.proxy_join(flow:proxy({ stop_host_when_stop = true })),
+    {},
+    { scheduler = clock }
+  )
+  waiter.cancel("leave")
+  assert_true(waiter.done and waiter.result.stopped, "waiter cancelled")
+  assert_true(flow.done and flow.result.stopped
+      and flow.result.reason == "proxy_stop_host",
+    "stop_host_when_stop")
+
+  -- proxy_stop 整段 flow
+  clock = Scheduler.VirtualClock()
+  flow = Sched.start_session(
+    fx.wait(5.0) >> function(_) return Cont.unit("x") end,
+    {},
+    { scheduler = clock }
+  )
+  local stopper = Sched.start_session(
+    fx.proxy_stop(flow:proxy(), "halt") >> function(ok) return Cont.unit(ok) end,
+    {},
+    { scheduler = clock }
+  )
+  assert_true(stopper.done and stopper.result.ok and stopper.result.value == true,
+    "proxy_stop flow ok")
+  assert_true(flow.done and flow.result.stopped and flow.result.reason == "halt",
+    "flow halted by proxy_stop")
+
+  io.stdout:write("ok\n")
+end
+
+
+
 ------------------------------------------------------------
 io.stdout:write("\n")
 if failures > 0 then

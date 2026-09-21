@@ -4,7 +4,7 @@
 --   · run_session(root_ma) — fx.run 主路径：动态任务集（nursery），支持
 --       wait / wait_until / chan_send·recv·close / connect/click /
 --       when_all·when_any / fork·join·join_handles / lane·lane_join·lane_stop·lane_abort /
---       with_timeout / supervise
+--       proxy_join·proxy_stop·proxy_abort / with_timeout / supervise
 --   · run_parallel(tasks, mode) — 顶层 WhenAll/WhenAny（内部走 session）
 --
 -- Cont Coro 编码：每个任务 Coro.start；无 Yield 的终态走同步快路径（跳过 session 循环）；
@@ -19,6 +19,7 @@
 -- Coro.Aborted（fx.abort）：join / when_all / when_any 向 waiter 传播 Aborted（不算成功值）。
 -- supervise：子 Failed（可选 Stopped）按 max_restarts/backoff 重启；cancel 当前子且不重启。
 -- flow:suspend() / flow:resume()：挂起本 flow 的 wait 兑现（timer/poll 回调推迟到 resume）。
+-- flow:proxy(opts?)：轻量 tabProxy 句柄；proxy_join 复用 joiners；可选 stop_host_when_stop。
 
 local Coro = require("coro")
 local Cont = require("cont")
@@ -323,7 +324,14 @@ end
 local clear_supervise_backoff
 
 -- 清除 wait / wait_event / chan 占用的 timer / listener / 队列；迟到回调靠 cancelled 旗标忽略
+-- 前向：proxy stop_host_when_stop（定义在 stop_task 之后）
+local apply_proxy_stop_host
+
 local function clear_task_waits(task)
+  -- 等待方被取消：可选反向停 proxy 目标（须在清 wait 前，保留 join_target）
+  if apply_proxy_stop_host and task.proxy_stop_host then
+    apply_proxy_stop_host(task)
+  end
   local nursery = task.nursery
   local opts = (nursery and nursery.opts) or {}
   local scheduler = opts.scheduler
@@ -600,31 +608,20 @@ local function cancel_fork_siblings(nursery, joined_ids, joiner_id, reason)
 end
 
 
--- 按名停止/中止 lane（先停后代再停自身）；mode="stop"|"abort"
--- 返回 true=曾在跑并已终态化；false=未知名或已结束
-local function stop_named_lane(nursery, name, mode, reason)
-  local lanes = nursery.lanes
-  if lanes == nil then
-    return false
-  end
-  local id = lanes[name]
-  if id == nil then
-    return false
-  end
-  local child = nursery.tasks[id]
+-- 停止/中止单个任务（先停后代再停自身）；mode="stop"|"abort"
+-- 返回 true=曾在跑并已终态化；false=nil/已结束
+local function stop_task(nursery, child, mode, reason)
   if child == nil or child.finished then
     return false
   end
   if mode == "abort" then
-    reason = reason or "lane_abort"
+    reason = reason or "abort"
   else
-    reason = reason or "lane_stop"
+    reason = reason or "stop"
   end
-  -- 先停后代，再处理自身
   cancel_descendants(nursery, child.id, reason)
   clear_task_waits(child)
   if mode == "abort" then
-    -- 跑 iquit/finally（Yielded.abort），再标 Aborted 供 join 传播
     if Coro.isYielded(child.answer) and type(child.answer.abort) == "function" then
       child.answer.abort(reason)
     end
@@ -643,6 +640,166 @@ local function stop_named_lane(nursery, name, mode, reason)
     end
   end
   return true
+end
+
+-- 按名停止/中止 lane；mode="stop"|"abort"
+local function stop_named_lane(nursery, name, mode, reason)
+  local lanes = nursery.lanes
+  if lanes == nil then
+    return false
+  end
+  local id = lanes[name]
+  if id == nil then
+    return false
+  end
+  local child = nursery.tasks[id]
+  if mode == "abort" then
+    reason = reason or "lane_abort"
+  else
+    reason = reason or "lane_stop"
+  end
+  return stop_task(nursery, child, mode, reason)
+end
+
+-- proxy 目标解析：返回 child|nil, kind ("task"|"lane"|"flow"|"unknown")
+local function resolve_proxy_target(nursery, proxy)
+  if type(proxy) ~= "table" or not proxy._is_proxy then
+    return nil, "unknown"
+  end
+  if proxy.flow ~= nil then
+    return nil, "flow"
+  end
+  if type(proxy.id) == "number" then
+    local child = nursery.tasks[proxy.id]
+    if child == nil then
+      return nil, "unknown"
+    end
+    return child, "task"
+  end
+  if type(proxy.name) == "string" and proxy.name ~= "" then
+    local id = nursery.lanes and nursery.lanes[proxy.name]
+    if id == nil then
+      return nil, "unknown"
+    end
+    local child = nursery.tasks[id]
+    if child == nil then
+      return nil, "unknown"
+    end
+    return child, "lane"
+  end
+  return nil, "unknown"
+end
+
+-- 从 host.joiners 摘掉 joiner（避免反向 stop 时再唤醒正在取消的等待方）
+local function detach_joiner(host, joiner_id)
+  if host == nil or host.joiners == nil then
+    return
+  end
+  local kept = {}
+  for _, jid in ipairs(host.joiners) do
+    if jid ~= joiner_id then
+      kept[#kept + 1] = jid
+    end
+  end
+  host.joiners = kept
+end
+
+-- stop_host_when_stop：等待方被取消时反向停目标
+apply_proxy_stop_host = function(task)
+  if not task.proxy_stop_host then
+    return
+  end
+  task.proxy_stop_host = nil
+  local reason = "proxy_stop_host"
+  local flow = task.proxy_host_flow
+  local host_id = task.join_target
+  local nursery = task.nursery
+  task.proxy_host_flow = nil
+  -- 先从 joiners / flow 等待表摘掉自己
+  if nursery and host_id then
+    detach_joiner(nursery.tasks[host_id], task.id)
+  end
+  if flow and flow._proxy_joiners then
+    local kept = {}
+    for _, e in ipairs(flow._proxy_joiners) do
+      if not (e.nursery == nursery and e.task_id == task.id) then
+        kept[#kept + 1] = e
+      end
+    end
+    flow._proxy_joiners = kept
+  end
+  task.join_target = nil
+  if task.parked == "join" or task.parked == "proxy_flow" then
+    task.parked = nil
+  end
+  if flow ~= nil then
+    if not flow.done and type(flow.cancel) == "function" then
+      flow.cancel(reason)
+    end
+    return
+  end
+  if nursery and host_id then
+    local host = nursery.tasks[host_id]
+    if host and not host.finished then
+      stop_task(nursery, host, "stop", reason)
+    end
+  end
+end
+
+-- flow 终态 → 唤醒跨 session 的 proxy_join 等待方
+local function map_flow_result_to_joiner(nursery, j, result)
+  if result.ok then
+    j.answer = Coro.resume(j.answer, result.value)
+  elseif result.aborted then
+    j.answer = Coro.Aborted(result.reason)
+    mark_finished(j)
+    on_task_terminal(nursery, j, "aborted")
+  elseif result.stopped then
+    j.answer = Coro.Stopped(result.reason)
+    mark_finished(j)
+    on_task_terminal(nursery, j, "stopped")
+  elseif result.failed then
+    j.answer = Coro.Failed(result.error)
+    mark_finished(j)
+    on_task_terminal(nursery, j, "failed")
+  else
+    error("fx_sched: flow proxy_join unexpected result shape")
+  end
+end
+
+local function notify_flow_proxy_joiners(flow)
+  local list = flow._proxy_joiners
+  if list == nil or #list == 0 then
+    return
+  end
+  flow._proxy_joiners = {}
+  local result = flow.result
+  for _, e in ipairs(list) do
+    local nursery = e.nursery
+    local j = nursery and nursery.tasks[e.task_id]
+    if j and not j.finished and j.parked == "proxy_flow" then
+      j.parked = nil
+      j.proxy_stop_host = nil
+      j.proxy_host_flow = nil
+      map_flow_result_to_joiner(nursery, j, result)
+      local pump = nursery.opts and nursery.opts._pump
+      if type(pump) == "function" then
+        pump()
+      end
+    end
+  end
+end
+
+local function attach_flow_proxy_method(flow)
+  --- flow:proxy(opts?) → Proxy（轻量 tabProxy；opts.stop_host_when_stop 反向停本 flow）
+  function flow:proxy(opts)
+    opts = opts or {}
+    return {
+      _is_proxy = true,
+      flow = flow,
+      stop_host_when_stop = not not opts.stop_host_when_stop,
+    }
+  end
 end
 
 -- session 级取消：停止 nursery 内全部未完成任务
@@ -862,6 +1019,8 @@ try_complete_joins = function(nursery, finished_task, status)
       if j.parked == "join" and j.join_target == finished_task.id then
         j.parked = nil
         j.join_target = nil
+        j.proxy_stop_host = nil
+        j.proxy_host_flow = nil
         if status == "done" then
           j.answer = Coro.resume(j.answer, finished_task.result)
           if j.join_cancel_siblings then
@@ -1576,6 +1735,190 @@ drive_until_block = function(nursery, task)
       task.answer = Coro.resume(task.answer, ok)
 
     ------------------------------------------------------------
+    -- proxy_join：等 proxy 目标（复用 joiners；flow 可跨 session）
+    ------------------------------------------------------------
+    elseif req.kind == "proxy_join" then
+      local proxy = req.proxy
+      assert(type(proxy) == "table" and proxy._is_proxy,
+        "fx_sched: proxy_join requires proxy")
+      local want_cancel = not not req.cancel_siblings
+      local stop_host = not not proxy.stop_host_when_stop
+
+      if proxy.flow ~= nil then
+        local fl = proxy.flow
+        emit_trace(opts, {
+          type = "join",
+          task_id = task.id,
+          proxy = "flow",
+        })
+        -- 同 session：join root
+        if fl.nursery == nursery and fl.root ~= nil then
+          local child = fl.root
+          if child.finished then
+            if Coro.isDone(child.answer) then
+              task.answer = Coro.resume(task.answer, child.result)
+              if want_cancel then
+                cancel_fork_siblings(nursery, { [child.id] = true }, task.id, "cancelled")
+              end
+            elseif Coro.isFailed(child.answer) then
+              task.answer = Coro.Failed(child.answer.error)
+              return "failed"
+            elseif Coro.isAborted(child.answer) then
+              task.answer = Coro.Aborted(child.answer.reason)
+              return "aborted"
+            elseif Coro.isStopped(child.answer) then
+              task.answer = Coro.Stopped(child.answer.reason)
+              return "stopped"
+            else
+              error("fx_sched: proxy_join flow root unexpected tag")
+            end
+          else
+            task.parked = "join"
+            task.join_target = child.id
+            task.join_cancel_siblings = want_cancel
+            if stop_host then
+              task.proxy_stop_host = true
+            end
+            child.joiners[#child.joiners + 1] = task.id
+            return "parked"
+          end
+        elseif fl.done then
+          local r = fl.result
+          if r == nil then
+            task.answer = Coro.Failed({ tag = "proxy_unknown", why = "flow_no_result" })
+            return "failed"
+          end
+          if r.ok then
+            task.answer = Coro.resume(task.answer, r.value)
+          elseif r.aborted then
+            task.answer = Coro.Aborted(r.reason)
+            return "aborted"
+          elseif r.stopped then
+            task.answer = Coro.Stopped(r.reason)
+            return "stopped"
+          elseif r.failed then
+            task.answer = Coro.Failed(r.error)
+            return "failed"
+          else
+            task.answer = Coro.Failed({ tag = "proxy_unknown", why = "flow_bad_result" })
+            return "failed"
+          end
+        else
+          -- 跨 session：挂到 flow._proxy_joiners
+          if fl._proxy_joiners == nil then
+            fl._proxy_joiners = {}
+          end
+          task.parked = "proxy_flow"
+          task.proxy_host_flow = fl
+          if stop_host then
+            task.proxy_stop_host = true
+          end
+          fl._proxy_joiners[#fl._proxy_joiners + 1] = {
+            nursery = nursery,
+            task_id = task.id,
+          }
+          return "parked"
+        end
+      else
+        local child, kind = resolve_proxy_target(nursery, proxy)
+        if kind == "unknown" or child == nil then
+          task.answer = Coro.Failed({
+            tag = "proxy_unknown",
+            name = proxy.name,
+            id = proxy.id,
+          })
+          return "failed"
+        end
+        emit_trace(opts, {
+          type = "join",
+          task_id = task.id,
+          target_id = child.id,
+          proxy = kind,
+        })
+        if child.finished then
+          if Coro.isDone(child.answer) then
+            task.answer = Coro.resume(task.answer, child.result)
+            if want_cancel then
+              cancel_fork_siblings(nursery, { [child.id] = true }, task.id, "cancelled")
+            end
+          elseif Coro.isFailed(child.answer) then
+            task.answer = Coro.Failed(child.answer.error)
+            return "failed"
+          elseif Coro.isAborted(child.answer) then
+            task.answer = Coro.Aborted(child.answer.reason)
+            return "aborted"
+          elseif Coro.isStopped(child.answer) then
+            task.answer = Coro.Stopped(child.answer.reason)
+            return "stopped"
+          else
+            error("fx_sched: proxy_join child finished with unexpected tag")
+          end
+        else
+          task.parked = "join"
+          task.join_target = child.id
+          task.join_cancel_siblings = want_cancel
+          if stop_host then
+            task.proxy_stop_host = true
+          end
+          child.joiners[#child.joiners + 1] = task.id
+          return "parked"
+        end
+      end
+
+    ------------------------------------------------------------
+    -- proxy_stop / proxy_abort：停/中止 proxy 目标
+    ------------------------------------------------------------
+    elseif req.kind == "proxy_stop" or req.kind == "proxy_abort" then
+      local proxy = req.proxy
+      assert(type(proxy) == "table" and proxy._is_proxy,
+        "fx_sched: " .. req.kind .. " requires proxy")
+      local mode = (req.kind == "proxy_abort") and "abort" or "stop"
+      local reason = req.reason
+      if reason == nil then
+        reason = (mode == "abort") and "proxy_abort" or "proxy_stop"
+      end
+      emit_trace(opts, {
+        type = "cancel",
+        task_id = task.id,
+        proxy = true,
+        mode = mode,
+      })
+      local ok = false
+      if proxy.flow ~= nil then
+        local fl = proxy.flow
+        if not fl.done then
+          if mode == "abort" and fl.root and not fl.root.finished then
+            -- 中止根任务并 settle flow
+            local root = fl.root
+            local n = fl.nursery
+            if n then
+              cancel_descendants(n, root.id, reason)
+              clear_task_waits(root)
+              if Coro.isYielded(root.answer) and type(root.answer.abort) == "function" then
+                root.answer.abort(reason)
+              end
+              root.answer = Coro.Aborted(reason)
+              mark_finished(root)
+              root._terminal_handled = true
+            end
+            fl.done = true
+            fl.result = { ok = false, aborted = true, reason = reason }
+            notify_flow_proxy_joiners(fl)
+            ok = true
+          elseif type(fl.cancel) == "function" then
+            fl.cancel(reason)
+            ok = true
+          end
+        end
+      else
+        local child, kind = resolve_proxy_target(nursery, proxy)
+        if child ~= nil then
+          ok = stop_task(nursery, child, mode, reason)
+        end
+      end
+      task.answer = Coro.resume(task.answer, ok)
+
+    ------------------------------------------------------------
     -- wait_event：事件总线 listen；无总线则走 handlers.wait_event
     ------------------------------------------------------------
     elseif req.kind == "wait_event" then
@@ -2013,6 +2356,7 @@ local function make_settled_flow(result)
   function flow.cancel(_reason)
     return flow.result
   end
+  attach_flow_proxy_method(flow)
   return flow
 end
 
@@ -2211,6 +2555,7 @@ function M.start_session(ma, handlers, opts)
     elseif r.failed then
       emit_trace(opts, { type = "failed", root_id = root.id, error = r.error })
     end
+    notify_flow_proxy_joiners(flow)
     return flow.result
   end
 
@@ -2280,6 +2625,7 @@ function M.start_session(ma, handlers, opts)
       root_id = root.id,
       error = session_on_timeout,
     })
+    notify_flow_proxy_joiners(flow)
     return flow.result
   end
 
@@ -2338,6 +2684,7 @@ function M.start_session(ma, handlers, opts)
         flow.done = true
         flow.result = { ok = false, stopped = true, reason = "cancelled" }
         emit_trace(opts, { type = "stopped", root_id = root.id, reason = "cancelled" })
+        notify_flow_proxy_joiners(flow)
         pumping = false
         return flow.result
       end
@@ -2369,6 +2716,10 @@ function M.start_session(ma, handlers, opts)
           else
             any_ext_wait = true
           end
+        end
+        -- 跨 session proxy_join：外部 flow 终态时 notify，算 ext wait
+        if not task.finished and task.parked == "proxy_flow" then
+          any_ext_wait = true
         end
       end
       if nursery.session_deadline ~= nil then
@@ -2504,6 +2855,7 @@ function M.start_session(ma, handlers, opts)
     flow.done = true
     flow.result = { ok = false, stopped = true, reason = reason }
     emit_trace(opts, { type = "stopped", root_id = root.id, reason = reason })
+    notify_flow_proxy_joiners(flow)
     return flow.result
   end
 
@@ -2513,6 +2865,7 @@ function M.start_session(ma, handlers, opts)
 
   opts._pump = pump
   nursery.opts = opts -- 确保 clear_task_waits 见到 _pump/scheduler
+  attach_flow_proxy_method(flow)
 
   -- 有 scheduler 时挂 deadline 看门狗（游戏时间）
   if root.deadline_abs ~= nil and opts.scheduler ~= nil then

@@ -12,6 +12,8 @@
 --   5. fx.fork / fx.join / fx.join_handles：非结构化并发（先 fork，中间可做别的事，再 join）。
 --   5b. fx.lane / lane_join / lane_stop / lane_abort / lanes：命名子流（≈ tabMachine c:start("t1")）；
 --       session.lanes 名表 + 复用 fork/join nursery。
+--   5c. fx.proxy / proxy_join / proxy_stop / proxy_abort（+ flow:proxy）：轻量 tabProxy 对照；
+--       外部 wait/stop 句柄，不拥有 Cont；复用 fork/join joiners；可选 stop_host_when_stop。
 --   6. fx.map_parallel：有限并发池（滑动窗口 fork/join，结果按输入顺序）。
 --   7. fx.with_timeout：与 wait(deadline) 竞速；超时 → Failed("timeout")（可自定义）。
 --      截止时间向下传播到 fork 子任务；子可再用更紧的 with_timeout。
@@ -40,7 +42,8 @@
 -- 标准 kind 一览（详见 fx_registry.STANDARD_KINDS）：
 --   内建：wait, wait_event, wait_until, wait_real, chan_send, chan_recv, chan_close,
 --         when_all, when_any, fork, join, join_handles,
---         lane, lane_join, lane_stop, lane_abort, with_timeout, supervise
+--         lane, lane_join, lane_stop, lane_abort,
+--         proxy_join, proxy_stop, proxy_abort, with_timeout, supervise
 --   演示：anim（需 register）；遗留 mock：connect, click
 
 local Cont = require("cont")
@@ -420,6 +423,109 @@ function fx.lanes(map)
   return start_at(1, {})
 end
 
+
+------------------------------------------------------------
+-- 轻量 proxy（≈ tabMachine tabProxy：外部 wait/stop，不拥有 Cont）
+-- 复用 fork/join joiners；目标可为 lane 名、fork/lane handle、或 flow
+------------------------------------------------------------
+
+local function proxy_opts(opts)
+  opts = opts or {}
+  return not not opts.stop_host_when_stop
+end
+
+-- 构造 proxy 句柄（纯表，非 Cont）
+local function make_proxy(fields, opts)
+  local p = {
+    _is_proxy = true,
+    stop_host_when_stop = proxy_opts(opts),
+  }
+  for k, v in pairs(fields) do
+    p[k] = v
+  end
+  return p
+end
+
+-- proxy : name|handle|flow → opts? → Proxy
+--   string → 命名 lane；{id=…} → fork/lane 任务；flow → 整段 session
+-- opts.stop_host_when_stop：proxy_join 等待方被取消时，反向停止目标（≈ tabProxy）
+function fx.proxy(name_or_handle, opts)
+  assert(name_or_handle ~= nil, "fx.proxy: name_or_handle required")
+  if type(name_or_handle) == "string" then
+    assert(name_or_handle ~= "", "fx.proxy: name must be non-empty string")
+    return make_proxy({ name = name_or_handle }, opts)
+  end
+  assert(type(name_or_handle) == "table",
+    "fx.proxy: expected string name, handle {id=…}, or flow")
+  if name_or_handle._is_flow then
+    return make_proxy({ flow = name_or_handle }, opts)
+  end
+  if name_or_handle._is_proxy then
+    -- 已是 proxy：可选覆盖 stop_host_when_stop
+    if opts ~= nil then
+      return make_proxy({
+        name = name_or_handle.name,
+        id = name_or_handle.id,
+        flow = name_or_handle.flow,
+      }, opts)
+    end
+    return name_or_handle
+  end
+  assert(name_or_handle.id ~= nil, "fx.proxy: handle must have .id")
+  local fields = { id = name_or_handle.id }
+  if type(name_or_handle.name) == "string" then
+    fields.name = name_or_handle.name
+  end
+  return make_proxy(fields, opts)
+end
+
+-- proxy_join : Proxy → opts? → Cont Answer a
+-- 等到目标 Done；Failed/Stopped/Aborted 向父传播（同 join）
+-- 未知目标 → Failed { tag="proxy_unknown" }
+-- Yield: { kind="proxy_join", proxy, cancel_siblings?=bool }
+function fx.proxy_join(proxy, opts)
+  assert(type(proxy) == "table" and proxy._is_proxy,
+    "fx.proxy_join: expected proxy from fx.proxy / flow:proxy")
+  opts = opts or {}
+  local req = { kind = "proxy_join", proxy = proxy }
+  if opts.cancel_siblings then
+    req.cancel_siblings = true
+  end
+  return Coro.yield(req) >> function(value)
+    return Cont.unit(value)
+  end
+end
+
+-- proxy_stop : Proxy → reason? → Cont Answer bool
+-- 合作式停止目标（Stopped）；resume true=曾在跑，false=未知/已终态
+-- Yield: { kind="proxy_stop", proxy, reason? }
+function fx.proxy_stop(proxy, reason)
+  assert(type(proxy) == "table" and proxy._is_proxy,
+    "fx.proxy_stop: expected proxy")
+  local req = { kind = "proxy_stop", proxy = proxy }
+  if reason ~= nil then
+    req.reason = reason
+  end
+  return Coro.yield(req) >> function(ok)
+    return Cont.unit(ok)
+  end
+end
+
+-- proxy_abort : Proxy → reason? → Cont Answer bool
+-- 异常中止目标（Aborted）；resume true/false 同 proxy_stop
+-- Yield: { kind="proxy_abort", proxy, reason? }
+function fx.proxy_abort(proxy, reason)
+  assert(type(proxy) == "table" and proxy._is_proxy,
+    "fx.proxy_abort: expected proxy")
+  local req = { kind = "proxy_abort", proxy = proxy }
+  if reason ~= nil then
+    req.reason = reason
+  end
+  return Coro.yield(req) >> function(ok)
+    return Cont.unit(ok)
+  end
+end
+
 ------------------------------------------------------------
 -- 有限并发池（map_parallel）
 ------------------------------------------------------------
@@ -651,7 +757,7 @@ end
 -- 默认处理器：打印日志 + mock 成功结果
 -- kind="stop" 可选：若业务误用 Coro.yield{kind="stop"}，handlers 可识别；
 -- 正常请用 fx.stop（直接 Stopped，不经过 handler）。
--- when_all / when_any / fork / join / with_timeout / supervise 由 session 调度器处理，不经本表。
+-- when_all / when_any / fork / join / lane* / proxy_* / with_timeout / supervise 由 session 调度器处理，不经本表。
 local default_handlers = {
   wait = function(req)
     local secs = req.seconds or 0

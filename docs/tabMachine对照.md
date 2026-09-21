@@ -2,7 +2,7 @@
 
 目标：**对齐有用的 tabMachine 能力子集**，不是完整克隆。  
 参考概念来自 ThinEureka/tabMachine（abort/stop、iquit、seq、suspend、join/select）。  
-版本：**0.2.9-eng**。
+版本：**0.2.10-eng**。
 
 图例：✅ 已对齐　🔶 部分／语义近似　❌ 本轮有意不做
 
@@ -28,7 +28,7 @@
 | 按名 join 子 tab | `fx.lane_join("t1")` | ✅ | 语义同 `fx.join`；未知名 → `lane_unknown` |
 | 按名 stop/abort | `fx.lane_stop` / `fx.lane_abort` | ✅ | stop→Stopped；abort→Aborted（join 不算成功） |
 | 一次启多行再汇合 | `fx.lanes({ s=ma1, t=ma2 })` | ✅ | 命名 fork + `join_handles`；resume `{ s=…, t=… }` |
-| `tabProxy` | — | ❌ | 无代理对象模型 |
+| `tabProxy` | `fx.proxy` / `flow:proxy` + `proxy_join`/`stop`/`abort` | ✅ | **轻量对照**：外部 wait/stop 句柄，不拥有 Cont；复用 joiners；可选 `stop_host_when_stop` |
 | `xx_update` 为标签 | — | ❌ | 无每帧标签调度；用 `fx.wait_until` / `schedule_poll` |
 | notify / 邮箱协作 | `fx.chan` / `send` / `recv` | ✅ | 有界 mailbox；默认容量 1；非 tab 事件 DSL |
 | 完整 tab 树 DSL | — | ❌ | 保持 Cont/CPS；文档映射即可 |
@@ -91,13 +91,43 @@ return fx.lanes({
 end
 ```
 
-与完整 tab 树的差异：无 `tabProxy`、无 `xx_update` 标签调度、无事件/UI DSL；lane 就是 **带名字的 fork 子任务**。
+与完整 tab 树的差异：proxy 无 output/事件转发链、无 `xx_update` 标签调度、无事件/UI DSL；lane 就是 **带名字的 fork 子任务**；proxy 就是 **可外部 wait/stop 的句柄**。
 
 ---
 
+## 命名 proxy ↔ `tabProxy`
+
+```lua
+-- tabMachine：把子过程 proxy 交给外部 call/等待
+--   return c:call(...):tabProxy(nil, true)  -- stopHostWhenStop
+
+-- Cont/fx 轻量对照：
+return fx.lane("walk", walk_ma) >> function(h)
+  -- 把句柄交给外部（或本 session 其它 Cont）
+  local p = fx.proxy(h, { stop_host_when_stop = true })
+  -- 外部：
+  --   fx.proxy_join(p)   -- 等到 walk 终态
+  --   fx.proxy_stop(p)   -- 合作式停
+  return Cont.unit(p)  -- 若业务要把 proxy 当值传出，需自行约定
+end
+
+-- 整段 flow：
+--   local flow = Sched.start_session(ma, h, opts)
+--   local p = flow:proxy({ stop_host_when_stop = true })
+--   -- 另一 session：fx.proxy_join(p)
+```
+
+| | tabMachine `tabProxy` | Cont/fx `proxy` |
+|--|----------------------|-----------------|
+| 形态 | 可 `call` 的代理 tab（调用者树下建 proxy context） | 纯表句柄 + Cont `proxy_join`/`stop`/`abort` |
+| host 停 → 等待方 | proxy context 停 | join 传播 Stopped/Aborted/Failed |
+| 等待方停 → host | `stopHostWhenStop` | `opts.stop_host_when_stop`（join 等待方被 cancel 时） |
+| output / 事件转发 | 有 | **无**（有意保持最小） |
+
 ## 有意推迟（非缺陷清单）
 
-- tabProxy、`xx_update` 标签语义、完整 tab 树 DSL  
+- proxy 的 output/事件转发链、完整代理 tab 树  
+- `xx_update` 标签语义、完整 tab 树 DSL  
 - 完整 tabMachine 事件/UI 绑定 DSL  
 
 

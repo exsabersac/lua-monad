@@ -5,7 +5,7 @@
 --
 -- 内建由调度器直接处理（不必 register）：
 --   wait, wait_event, wait_until, wait_real, chan_send, chan_recv, chan_close,
---   when_all, when_any, fork, join, join_handles, with_timeout, supervise
+--   when_all, when_any, fork, join, join_handles, lane*, proxy_*, with_timeout, supervise
 -- 演示 / 遗留 mock（默认 handlers 或示例 register）：
 --   connect, click  — 教学 mock
 --   anim           — GameSim / 示例自定义异步演示
@@ -67,6 +67,18 @@ M.STANDARD_KINDS = {
   lane_abort = {
     role = "builtin",
     desc = "按名异常中止 lane（Aborted）；join 不算成功；resume true/false",
+  },
+  proxy_join = {
+    role = "builtin",
+    desc = "等 proxy 目标终态（复用 joiners）；未知 → Failed(proxy_unknown)；语义同 join",
+  },
+  proxy_stop = {
+    role = "builtin",
+    desc = "合作式停止 proxy 目标（Stopped）；resume true/false",
+  },
+  proxy_abort = {
+    role = "builtin",
+    desc = "异常中止 proxy 目标（Aborted）；resume true/false",
   },
   with_timeout = { role = "builtin", desc = "与 wait(deadline) 竞速；超时 → Failed；截止向下传播到 fork" },
   supervise = {
