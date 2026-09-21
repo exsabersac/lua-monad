@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.18-eng — 2026-09-21
+
+### Refactor（行为保持）
+- **`fx_sched` 拆分**：薄编排 `fx_sched.lua` + `fx_sched_util` / `chan` / `nursery` / `supervise` / `drive` / `session`；共享袋 `S` 晚绑定
+- **去重**：`arm_scheduler_timer`、`apply_finished_child_to_waiter`、`settle_group` 失败分支合并
+- **`fx.lua`**：`lane_stop`/`lane_abort`、`proxy_stop`/`proxy_abort`、`run_all`/`run_any` 收成薄包装
+- 文档：[`docs/核心整理说明.md`](docs/核心整理说明.md)；公共 API / Lua 5.3 测试与示例不变
+
 ## 0.2.17-eng — 2026-09-21
 
 ### Examples

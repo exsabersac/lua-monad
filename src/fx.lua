@@ -37,7 +37,7 @@
 --   Coro 用 Cont 编码答案类型 Done | Yielded | Stopped | Aborted | Failed；业务 API 请走本模块 / Coro，
 --   不要当原生协程 perform/runDo 用（本库主线已放弃 native perform/runDo）。
 --
--- 依赖：cont.lua、coro.lua、fx_sched.lua、fx_registry.lua、fx_flow.lua
+-- 依赖：cont.lua、coro.lua、fx_sched.lua（及 fx_sched_* 子模块）、fx_registry.lua、fx_flow.lua
 --
 -- 标准 kind 一览（详见 fx_registry.STANDARD_KINDS）：
 --   内建：wait, wait_event, wait_until, wait_real, chan_send, chan_recv, chan_close,
@@ -354,13 +354,11 @@ function fx.lane_join(name, opts)
   end
 end
 
--- lane_stop : name → reason? → Cont Answer bool
--- 合作式停止命名 lane（Stopped）；resume true=曾在跑，false=无名/已终态
--- Yield: { kind="lane_stop", name, reason? }
-function fx.lane_stop(name, reason)
+-- lane_stop / lane_abort：合作式 Stopped vs 异常 Aborted；resume true=曾在跑
+local function lane_control(kind, name, reason)
   assert(type(name) == "string" and name ~= "",
-    "fx.lane_stop: name must be non-empty string")
-  local req = { kind = "lane_stop", name = name }
+    "fx." .. kind .. ": name must be non-empty string")
+  local req = { kind = kind, name = name }
   if reason ~= nil then
     req.reason = reason
   end
@@ -369,19 +367,12 @@ function fx.lane_stop(name, reason)
   end
 end
 
--- lane_abort : name → reason? → Cont Answer bool
--- 异常中止命名 lane（Aborted，join 不算成功）；resume true/false 同 lane_stop
--- Yield: { kind="lane_abort", name, reason? }
+function fx.lane_stop(name, reason)
+  return lane_control("lane_stop", name, reason)
+end
+
 function fx.lane_abort(name, reason)
-  assert(type(name) == "string" and name ~= "",
-    "fx.lane_abort: name must be non-empty string")
-  local req = { kind = "lane_abort", name = name }
-  if reason ~= nil then
-    req.reason = reason
-  end
-  return Coro.yield(req) >> function(ok)
-    return Cont.unit(ok)
-  end
+  return lane_control("lane_abort", name, reason)
 end
 
 -- lanes : { name = Cont Answer a, ... } → Cont Answer { name = a, ... }
@@ -496,13 +487,11 @@ function fx.proxy_join(proxy, opts)
   end
 end
 
--- proxy_stop : Proxy → reason? → Cont Answer bool
--- 合作式停止目标（Stopped）；resume true=曾在跑，false=未知/已终态
--- Yield: { kind="proxy_stop", proxy, reason? }
-function fx.proxy_stop(proxy, reason)
+-- proxy_stop / proxy_abort：Stopped vs Aborted；resume true/false 同 lane_control
+local function proxy_control(kind, proxy, reason)
   assert(type(proxy) == "table" and proxy._is_proxy,
-    "fx.proxy_stop: expected proxy")
-  local req = { kind = "proxy_stop", proxy = proxy }
+    "fx." .. kind .. ": expected proxy")
+  local req = { kind = kind, proxy = proxy }
   if reason ~= nil then
     req.reason = reason
   end
@@ -511,19 +500,12 @@ function fx.proxy_stop(proxy, reason)
   end
 end
 
--- proxy_abort : Proxy → reason? → Cont Answer bool
--- 异常中止目标（Aborted）；resume true/false 同 proxy_stop
--- Yield: { kind="proxy_abort", proxy, reason? }
+function fx.proxy_stop(proxy, reason)
+  return proxy_control("proxy_stop", proxy, reason)
+end
+
 function fx.proxy_abort(proxy, reason)
-  assert(type(proxy) == "table" and proxy._is_proxy,
-    "fx.proxy_abort: expected proxy")
-  local req = { kind = "proxy_abort", proxy = proxy }
-  if reason ~= nil then
-    req.reason = reason
-  end
-  return Coro.yield(req) >> function(ok)
-    return Cont.unit(ok)
-  end
+  return proxy_control("proxy_abort", proxy, reason)
 end
 
 ------------------------------------------------------------
@@ -839,26 +821,23 @@ function fx.run_parallel(tasks, handlers, opts)
   return Sched.run_parallel(tasks, h, sched_opts, mode)
 end
 
--- run_all : 教学友好别名（WhenAll）
-function fx.run_all(tasks, handlers, opts)
+-- run_all / run_any：教学友好别名（WhenAll / WhenAny）
+local function run_parallel_mode(mode, tasks, handlers, opts)
   opts = opts or {}
   local o = {}
   for k, v in pairs(opts) do
     o[k] = v
   end
-  o.mode = "all"
+  o.mode = mode
   return fx.run_parallel(tasks, handlers, o)
 end
 
--- run_any : 教学友好别名（WhenAny）
+function fx.run_all(tasks, handlers, opts)
+  return run_parallel_mode("all", tasks, handlers, opts)
+end
+
 function fx.run_any(tasks, handlers, opts)
-  opts = opts or {}
-  local o = {}
-  for k, v in pairs(opts) do
-    o[k] = v
-  end
-  o.mode = "any"
-  return fx.run_parallel(tasks, handlers, o)
+  return run_parallel_mode("any", tasks, handlers, opts)
 end
 
 ------------------------------------------------------------
