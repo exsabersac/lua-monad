@@ -2192,6 +2192,139 @@ do
 end
 
 
+
+------------------------------------------------------------
+-- FrameScheduler / fx.wait_until
+------------------------------------------------------------
+do
+  local fx = require("fx")
+  local Scheduler = require("scheduler")
+  local Sched = require("fx_sched")
+  local GameSim = require("game_sim")
+  -- FrameScheduler：timer + tick
+  local clock = Scheduler.FrameScheduler()
+  local fired = false
+  clock.schedule(0.3, function() fired = true end)
+  clock.tick(0.2)
+  assert_true(not fired and math.abs(clock.now() - 0.2) < 1e-12, "FrameScheduler before due")
+  clock.tick(0.1)
+  assert_true(fired and math.abs(clock.now() - 0.3) < 1e-9, "FrameScheduler timer due")
+
+  -- wait_until + FrameScheduler
+  clock = Scheduler.FrameScheduler()
+  local n = 0
+  local flow = Sched.start_session(
+    fx.wait_until(function()
+      n = n + 1
+      if n >= 3 then return "ready" end
+      return false
+    end),
+    {},
+    { scheduler = clock }
+  )
+  assert_true(not flow.done and n == 1, "wait_until parks after immediate false")
+  clock.tick(1 / 30)
+  assert_true(not flow.done and n == 2, "wait_until poll tick1")
+  clock.tick(1 / 30)
+  assert_true(flow.done and flow.result.ok and flow.result.value == "ready",
+    "wait_until FrameScheduler done")
+  assert_true(n == 3, "wait_until poll count")
+
+  -- opts.interval：跳过未到间隔的 tick
+  clock = Scheduler.FrameScheduler()
+  local checks = 0
+  flow = Sched.start_session(
+    fx.wait_until(function()
+      checks = checks + 1
+      return clock.now() >= 0.25 and clock.now()
+    end, { interval = 0.1 }),
+    {},
+    { scheduler = clock }
+  )
+  clock.tick(0.05)
+  local c_after = checks
+  clock.tick(0.04) -- 未到 next_at
+  assert_true(checks == c_after, "wait_until interval skips early tick")
+  clock.tick(0.2)
+  assert_true(flow.done and flow.result.ok and flow.result.value >= 0.25 - 1e-9,
+    "wait_until interval eventually")
+
+  -- cancel 清除 poll
+  clock = Scheduler.FrameScheduler()
+  flow = Sched.start_session(
+    fx.wait_until(function() return false end),
+    {},
+    { scheduler = clock }
+  )
+  assert_true(clock.pending_polls() == 1, "pending poll")
+  flow.cancel("stop-poll")
+  assert_true(flow.done and flow.result.stopped, "cancel wait_until")
+  assert_true(clock.pending_polls() == 0, "poll cleared on cancel")
+
+  -- VirtualClock：无 schedule_poll 时用 schedule 轮询模拟
+  clock = Scheduler.VirtualClock()
+  n = 0
+  flow = Sched.start_session(
+    fx.wait_until(function()
+      n = n + 1
+      return n >= 3 and "via-sched"
+    end),
+    {},
+    { scheduler = clock }
+  )
+  clock.advance(0)
+  assert_true(not flow.done, "VirtualClock wait_until pending")
+  clock.advance(0)
+  assert_true(flow.done and flow.result.ok and flow.result.value == "via-sched",
+    "VirtualClock wait_until via schedule")
+
+  -- GameSim.tick + wait_until
+  local sim = GameSim.new({ dt = 0.05 })
+  local r = sim:run(
+    fx.wait_until(function()
+      return sim:now() >= 0.2 and sim:now()
+    end)
+  )
+  assert_true(r.ok and r.value >= 0.2 - 1e-9, "GameSim wait_until value")
+  assert_true(sim:now() >= 0.2 - 1e-9 and sim:now() < 0.35, "GameSim wait_until time")
+
+  -- with_timeout + wait_until
+  clock = Scheduler.FrameScheduler()
+  flow = Sched.start_session(
+    fx.with_timeout(fx.wait_until(function() return false end), 0.15),
+    {},
+    { scheduler = clock }
+  )
+  clock.tick(0.1)
+  assert_true(not flow.done, "timeout wait_until still waiting")
+  clock.tick(0.06)
+  assert_true(flow.done and flow.result.failed and flow.result.error == "timeout",
+    "timeout beats wait_until")
+  assert_true(clock.pending_polls() == 0, "poll cleared on timeout")
+
+  -- pred 抛错 → Failed
+  clock = Scheduler.FrameScheduler()
+  local first = true
+  flow = Sched.start_session(
+    fx.wait_until(function()
+      if first then first = false; return false end
+      error("pred-boom")
+    end),
+    {},
+    { scheduler = clock }
+  )
+  clock.tick(0.01)
+  assert_true(flow.done and flow.result.failed, "pred error Failed")
+  assert_true(tostring(flow.result.error):find("pred-boom", 1, true) ~= nil,
+    "pred error message")
+
+  -- STANDARD_KINDS.wait_until
+  local Registry = require("fx_registry")
+  assert_true(Registry.STANDARD_KINDS.wait_until ~= nil, "STANDARD_KINDS.wait_until")
+end
+
+
+
 ------------------------------------------------------------
 io.stdout:write("\n")
 if failures > 0 then

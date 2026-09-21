@@ -18,6 +18,7 @@
 --   fx.bind_entity(flow, entity)  — 实体 OnDestroy 时 cancel（见 fx_flow）
 --   fx.with_resource / Cont.bracket — 资源获取-使用-释放
 --   opts.trace / fx.set_tracer      — 轻量追踪（默认关）
+--   fx.wait_until / FrameScheduler  — 每帧 poll；弱 timer 时用 tick(dt) 后端
 --   GameSim:start_flow(entity, ma)  — 参考宿主；Unity 侧同样 pattern
 
 local M = {}

@@ -4,7 +4,7 @@
 -- Session（fx_sched）在解析「非内建」kind 时查本表（再经 handlers 合并覆盖）。
 --
 -- 内建由调度器直接处理（不必 register）：
---   wait, wait_event, when_all, when_any, fork, join, join_handles, with_timeout
+--   wait, wait_event, wait_until, when_all, when_any, fork, join, join_handles, with_timeout
 -- 演示 / 遗留 mock（默认 handlers 或示例 register）：
 --   connect, click  — 教学 mock
 --   anim           — GameSim / 示例自定义异步演示
@@ -25,6 +25,10 @@ M.STANDARD_KINDS = {
   wait_event = {
     role = "builtin",
     desc = "挂起 name(+filter?)；由 scheduler.listen / GameSim.emit 或 handlers.wait_event 兑现",
+  },
+  wait_until = {
+    role = "builtin",
+    desc = "每 tick/interval poll pred()；真值 resume；需 FrameScheduler/GameSim.schedule_poll",
   },
   when_all = { role = "builtin", desc = "结构化并行：全部 Done 后 resume values 数组" },
   when_any = { role = "builtin", desc = "结构化并行：首个 Done 胜出，其余取消" },

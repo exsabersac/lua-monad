@@ -1,6 +1,6 @@
 # Lua Monad · CPS 续延
 
-**版本 `0.2.1-eng`**（工程可用：注册表 / 绑定 / bracket / 追踪 / **截止时间继承**；见 [CHANGELOG](CHANGELOG.md) / [工程可用验收](docs/工程可用验收.md)）。
+**版本 `0.2.2-eng`**（工程可用：注册表 / 绑定 / bracket / 追踪 / 截止继承 / **wait_until + FrameScheduler**；见 [CHANGELOG](CHANGELOG.md) / [工程可用验收](docs/工程可用验收.md)）。
 
 本仓库用纯 Lua 模拟 Haskell 风格的 Monad，**主线是 Cont（续延）与 CPS**：
 

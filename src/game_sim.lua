@@ -2,7 +2,8 @@
 --
 -- 对接 docs/工程对接与后续.md：
 --   · 实现 Scheduler：now / schedule / cancel（pause 时时间不推进）
---   · tick(dt) 推进游戏时间、触发到期 timer、派发事件
+--   · tick(dt) 推进游戏时间、触发到期 timer、poll wait_until、派发事件
+--   · schedule_poll(pred, cb, opts?)：与 FrameScheduler 同契约（每帧谓词）
 --   · emit / listen → 兑现 fx.wait_event
 --   · spawn/destroy_entity → 取消绑定 flow（finally 经 Coro.force_stop）
 --   · start_flow / run：把本 sim 作为 opts.scheduler 交给 fx_sched
@@ -40,6 +41,7 @@ function GameSim.new(opts)
     _paused = false,
     _next_timer_id = 0,
     _timers = {},
+    _polls = {},
     _next_listen_id = 0,
     _listeners = {},
     _next_entity_id = 0,
@@ -77,9 +79,43 @@ function GameSim.new(opts)
       return
     end
     handle.cancelled = true
-    if handle.id and self._timers[handle.id] then
-      self._timers[handle.id] = nil
+    if handle.id then
+      if self._timers[handle.id] then
+        self._timers[handle.id] = nil
+      end
+      if self._polls[handle.id] then
+        self._polls[handle.id] = nil
+      end
     end
+  end
+
+  --- schedule_poll(pred, cb, poll_opts?) → handle（同 FrameScheduler）
+  function self.schedule_poll(...)
+    local a, b, c = ...
+    local pred, cb, poll_opts
+    if a == self then
+      pred, cb, poll_opts = b, c, select(4, ...)
+    else
+      pred, cb, poll_opts = a, b, c
+    end
+    assert(type(pred) == "function", "GameSim.schedule_poll: pred must be function")
+    assert(type(cb) == "function", "GameSim.schedule_poll: cb must be function")
+    poll_opts = poll_opts or {}
+    local interval = poll_opts.interval or 0
+    assert(type(interval) == "number" and interval >= 0,
+      "GameSim.schedule_poll: interval must be >= 0")
+    self._next_timer_id = self._next_timer_id + 1
+    local id = self._next_timer_id
+    local handle = { id = id, cancelled = false, kind = "poll" }
+    self._polls[id] = {
+      pred = pred,
+      cb = cb,
+      handle = handle,
+      interval = interval,
+      next_at = self._time,
+      on_error = poll_opts.on_error,
+    }
+    return handle
   end
 
   function self.listen(...)
@@ -258,6 +294,35 @@ local function fire_due_timers(self)
   end
 end
 
+local function run_polls(self)
+  local ids = {}
+  for id, _ in pairs(self._polls) do
+    ids[#ids + 1] = id
+  end
+  table.sort(ids)
+  for _, id in ipairs(ids) do
+    local p = self._polls[id]
+    if p and not p.handle.cancelled and self._time + 1e-12 >= p.next_at then
+      local ok, result = pcall(p.pred)
+      if not ok then
+        self._polls[id] = nil
+        p.handle.cancelled = true
+        if type(p.on_error) == "function" then
+          p.on_error(result)
+        else
+          error(result)
+        end
+      elseif result then
+        self._polls[id] = nil
+        p.handle.cancelled = true
+        p.cb(result)
+      else
+        p.next_at = self._time + p.interval
+      end
+    end
+  end
+end
+
 function GameSim:tick(dt)
   dt = dt or self._dt_default
   if dt < 0 then
@@ -266,6 +331,7 @@ function GameSim:tick(dt)
   if not self._paused then
     self._time = self._time + dt
     fire_due_timers(self)
+    run_polls(self)
   end
 end
 

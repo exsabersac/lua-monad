@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.2-eng — 2026-09-21
+
+- **`fx.wait_until(pred, opts?)`**：每 tick（或 `opts.interval`）poll 谓词；真值 resume 该返回值
+- **`FrameScheduler`**（`scheduler.lua`）：`now` / `schedule` / `cancel` / `tick(dt)`，tick 推进时间、到期 timer，并跑 `schedule_poll`（wait_until）
+- **GameSim**：同契约 `schedule_poll`；`tick` 内 poll wait_until（与 FrameScheduler 互为宿主）
+- 无 `schedule_poll` 的 Scheduler（如 VirtualClock）：用 `schedule` 自再预约模拟 poll
+- 无 scheduler：演示回退 busy 轮询（工程路径请接 FrameScheduler / GameSim）
+- 验收清单 / 工程对接文档：wait_until、FrameScheduler 标为已落地
+
 ## 0.2.1-eng — 2026-09-21
 
 - **截止时间向下传播**：`fx.with_timeout` / `opts.timeout` / `opts.deadline` 将绝对截止写入任务；`fork` / `when_all` / `when_any` 子任务继承剩余 deadline（有 scheduler 时为游戏时间）

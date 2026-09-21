@@ -15,6 +15,7 @@
 --   9. 这不是真实网络/UI；默认 handlers 只是 mock，便于演示与测试。
 --  10. opts.scheduler / opts.game：外部游戏时间后端；wait 走 schedule，不 busy_wait。
 --  11. fx.wait_event：由 GameSim.emit / listen 兑现。
+--  11b. fx.wait_until(pred, opts?)：每 tick/interval poll 谓词；需 FrameScheduler / GameSim.schedule_poll。
 --  12. fx.register / unregister：全局效果注册表（见 fx_registry）；未知 kind → Failed。
 --  13. fx.with_resource / Cont.bracket：资源获取-使用-释放（Done/Stopped/Failed 皆 release）。
 --  14. opts.trace / fx.set_tracer：轻量 flow 追踪（默认关闭）。
@@ -28,7 +29,7 @@
 -- 依赖：cont.lua、coro.lua、fx_sched.lua、fx_registry.lua、fx_flow.lua
 --
 -- 标准 kind 一览（详见 fx_registry.STANDARD_KINDS）：
---   内建：wait, wait_event, when_all, when_any, fork, join, join_handles, with_timeout
+--   内建：wait, wait_event, wait_until, when_all, when_any, fork, join, join_handles, with_timeout
 --   演示：anim（需 register）；遗留 mock：connect, click
 
 local Cont = require("cont")
@@ -62,6 +63,25 @@ function fx.wait_event(name, filter)
   end
   return Coro.yield(req) >> function(payload)
     return Cont.unit(payload)
+  end
+end
+
+-- wait_until : pred → opts? → Cont Answer result
+-- 每 tick（或 opts.interval 秒）调用 pred()；返回真值时 resume 该值。
+-- 需 session opts.scheduler 提供 schedule_poll（FrameScheduler / GameSim）；
+-- 无 scheduler 时演示回退：busy_wait 忙轮询（勿用于工程路径）。
+-- Yield: { kind="wait_until", pred=fn, interval?=number }
+function fx.wait_until(pred, opts)
+  assert(type(pred) == "function", "fx.wait_until: pred must be function")
+  opts = opts or {}
+  local req = { kind = "wait_until", pred = pred }
+  if opts.interval ~= nil then
+    assert(type(opts.interval) == "number" and opts.interval >= 0,
+      "fx.wait_until: opts.interval must be >= 0")
+    req.interval = opts.interval
+  end
+  return Coro.yield(req) >> function(result)
+    return Cont.unit(result)
   end
 end
 

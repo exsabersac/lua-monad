@@ -2,13 +2,14 @@
 --
 -- 统一驱动：
 --   · run_session(root_ma) — fx.run 主路径：动态任务集（nursery），支持
---       wait / connect/click / when_all·when_any / fork·join·join_handles / with_timeout
+--       wait / wait_until / connect/click / when_all·when_any / fork·join·join_handles / with_timeout
 --   · run_parallel(tasks, mode) — 顶层 WhenAll/WhenAny（内部走 session）
 --
 -- Cont Coro 编码：每个任务 Coro.start；wait 在多任务时登记 deadline（墙钟），
 -- 单任务时可走 handlers.wait（兼容瞬时 mock）；fork 立刻把 handle 还给父任务。
 -- 若 opts.scheduler（或 opts.game）提供，wait 走 schedule/cancel，不再 busy_wait；
--- session 可异步完成（timer 回调 resume + pump）。
+-- wait_until 走 schedule_poll（FrameScheduler / GameSim）；无 poll 时用 schedule 轮询模拟；
+-- session 可异步完成（timer/poll 回调 resume + pump）。
 -- 截止时间：opts.deadline / opts.timeout，以及 with_timeout，向下传播到 fork 子任务；
 -- 父 deadline 触发时递归 Stopped 未完成后代（finally 经 force_stop/abort）。
 
@@ -234,6 +235,9 @@ local function clear_task_waits(task)
   task.deadline = nil
   task.waiting = false
   task.waiting_event = false
+  task._wait_until_pred = nil
+  task._wait_until_interval = nil
+  task._wait_until_next = nil
 end
 
 local function mark_finished(task)
@@ -992,6 +996,154 @@ drive_until_block = function(nursery, task)
       end
 
     ------------------------------------------------------------
+    -- wait_until：每 tick / interval poll pred；真值 resume
+    ------------------------------------------------------------
+    elseif req.kind == "wait_until" then
+      local pred = req.pred
+      assert(type(pred) == "function", "fx_sched: wait_until requires .pred function")
+      local interval = req.interval or 0
+      assert(type(interval) == "number" and interval >= 0,
+        "fx_sched: wait_until interval must be >= 0")
+      emit_trace(opts, {
+        type = "yield",
+        task_id = task.id,
+        kind = "wait_until",
+        interval = interval,
+      })
+      local scheduler = opts.scheduler
+
+      local function resume_until(result)
+        if task.finished or not task.waiting then
+          return
+        end
+        task.waiting = false
+        task.timer_handle = nil
+        task._timer_flag = nil
+        task._wait_until_pred = nil
+        task._wait_until_interval = nil
+        task._wait_until_next = nil
+        emit_trace(opts, {
+          type = "resume",
+          task_id = task.id,
+          kind = "wait_until",
+        })
+        task.answer = Coro.resume(task.answer, result)
+        if type(opts._pump) == "function" then
+          opts._pump()
+        end
+      end
+
+      local function fail_until(err)
+        if task.finished then
+          return
+        end
+        clear_task_waits(task)
+        task.answer = Coro.Failed(err)
+        if type(opts._pump) == "function" then
+          opts._pump()
+        end
+      end
+
+      -- 立刻试一次（同帧可完成）
+      do
+        local ok, result = pcall(pred)
+        if not ok then
+          task.answer = Coro.Failed(result)
+          return "failed"
+        end
+        if result then
+          task.answer = Coro.resume(task.answer, result)
+          -- 继续 drive 循环
+        else
+          if scheduler ~= nil and type(scheduler.schedule_poll) == "function" then
+            local flag = { cancelled = false }
+            local handle = scheduler.schedule_poll(pred, function(v)
+              if flag.cancelled then
+                return
+              end
+              resume_until(v)
+            end, {
+              interval = interval,
+              on_error = function(err)
+                if flag.cancelled then
+                  return
+                end
+                fail_until(err)
+              end,
+            })
+            task.timer_handle = handle
+            task._timer_flag = flag
+            task.waiting = true
+            return "wait"
+          elseif scheduler ~= nil then
+            -- 无 schedule_poll：用 schedule 自再预约模拟（VirtualClock 等）
+            local flag = { cancelled = false }
+            local handle_box = { h = nil }
+            local function arm(delay)
+              handle_box.h = scheduler.schedule(delay, function()
+                if flag.cancelled then
+                  return
+                end
+                if task.finished or not task.waiting then
+                  return
+                end
+                local ok, result = pcall(pred)
+                if not ok then
+                  fail_until(result)
+                  return
+                end
+                if result then
+                  resume_until(result)
+                else
+                  local d = interval
+                  if d <= 0 then
+                    d = 0
+                  end
+                  arm(d)
+                  task.timer_handle = handle_box.h
+                end
+              end)
+              task.timer_handle = handle_box.h
+            end
+            task._timer_flag = flag
+            task.waiting = true
+            arm(0)
+            return "wait"
+          else
+            -- 演示回退：单任务忙轮询；多任务挂到墙钟循环
+            if live_count(nursery) > 1 then
+              task._wait_until_pred = pred
+              task._wait_until_interval = interval
+              task._wait_until_next = now() + (interval > 0 and interval or 0)
+              task.waiting = true
+              return "wait"
+            else
+              local step = interval
+              if step <= 0 then
+                step = 0.001
+              end
+              while true do
+                if is_cancelled(opts.cancel) then
+                  task.answer = force_stop_task_answer(task.answer, "cancelled")
+                  return "stopped"
+                end
+                busy_wait(step)
+                local ok, result = pcall(pred)
+                if not ok then
+                  task.answer = Coro.Failed(result)
+                  return "failed"
+                end
+                if result then
+                  task.answer = Coro.resume(task.answer, result)
+                  break
+                end
+              end
+            end
+          end
+        end
+      end
+
+    ------------------------------------------------------------
     -- 其它效果（connect / click / 自定义 kind …）
     -- opts.async_kinds[kind]=true 时：handler(req, resume_cb)，异步兑现
     ------------------------------------------------------------
@@ -1313,16 +1465,24 @@ function M.start_session(ma, handlers, opts)
         return settle_done()
       end
 
-      -- 墙钟 deadline 等待（无外部 scheduler 时）
+      -- 墙钟 deadline / wait_until 等待（无外部 scheduler 时）
       local min_dl = nil
       local any_deadline = false
-      local any_ext_wait = false -- scheduler timer / wait_event / async kind
+      local any_ext_wait = false -- scheduler timer / wait_event / async kind / poll
+      local any_until = false
       for _, task in pairs(nursery.tasks) do
         if not task.finished and task.waiting then
           if task.deadline then
             any_deadline = true
             if min_dl == nil or task.deadline < min_dl then
               min_dl = task.deadline
+            end
+          elseif task._wait_until_pred then
+            any_until = true
+            any_deadline = true -- 复用忙等分支
+            local nxt = task._wait_until_next or now()
+            if min_dl == nil or nxt < min_dl then
+              min_dl = nxt
             end
           else
             any_ext_wait = true
@@ -1377,6 +1537,31 @@ function M.start_session(ma, handlers, opts)
           local st = drive_until_block(nursery, task)
           if st == "done" or st == "stopped" or st == "failed" then
             on_task_terminal(nursery, task, st)
+          end
+        end
+        -- wait_until（无 scheduler 演示路径）：到点则 poll
+        for _, task in pairs(nursery.tasks) do
+          if not task.finished and task.waiting and task._wait_until_pred
+              and (task._wait_until_next or 0) <= tnow + 1e-9 then
+            local ok, result = pcall(task._wait_until_pred)
+            if not ok then
+              clear_task_waits(task)
+              task.answer = Coro.Failed(result)
+              on_task_terminal(nursery, task, "failed")
+            elseif result then
+              task.waiting = false
+              task._wait_until_pred = nil
+              task._wait_until_interval = nil
+              task._wait_until_next = nil
+              task.answer = Coro.resume(task.answer, result)
+              local st = drive_until_block(nursery, task)
+              if st == "done" or st == "stopped" or st == "failed" then
+                on_task_terminal(nursery, task, st)
+              end
+            else
+              local iv = task._wait_until_interval or 0
+              task._wait_until_next = tnow + (iv > 0 and iv or 0.001)
+            end
           end
         end
         -- 继续 while，再 drive

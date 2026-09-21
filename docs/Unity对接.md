@@ -174,3 +174,13 @@ end, { async = true })
 | 日期 | 说明 |
 |------|------|
 | 2026-09-21 | 初稿：scaled 游戏时间、主线程桥接、实体销毁、效果注册、xLua/tolua/slua、清单与 GameSim/dungeon_raid 指向 |
+
+## FrameScheduler / wait_until（弱 timer 备选）
+
+若 Unity 侧已有可靠 scaled timer，优先 `LuaGameScheduler.adapt(host)`。  
+若只有 `Update(dt)`、timer 不可靠，可用 `require("scheduler").FrameScheduler()`：
+
+- `tick(dt)`：推进游戏时间、触发到期 `schedule`、poll `wait_until`
+- 业务：`fx.wait_until(pred, { interval = 0 })`
+- `GameSim` 同样实现 `schedule_poll`，单测/离线可互换
+
