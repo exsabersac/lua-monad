@@ -22,3 +22,6 @@ luarocks/
 *.log
 *.tmp
 .cache/
+
+# Tool generated outputs
+tools/trace_out.json

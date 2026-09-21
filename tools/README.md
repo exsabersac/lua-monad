@@ -10,6 +10,8 @@
 | [`alloc_hotspot.lua`](alloc_hotspot.lua) | Cont `>>` 链分配热点：`collectgarbage("count")` before/after + 表计数启发式 |
 | [`flow_doctor.lua`](flow_doctor.lua) | 常见误配置检查：未知 kind → Failed、wait 无 scheduler 提示、打印 `STANDARD_KINDS`；`--` + `strict` 供 CI |
 | [`trace_dump.lua`](trace_dump.lua) | 演示 `opts.trace`：打印 flow 追踪事件（文本或 `--json`；可选 `--lane` / `--chan`） |
+| [`trace_export.lua`](trace_export.lua) | 小型 Cont/fx 场景 + `opts.trace` → JSON 文件（默认 `tools/trace_out.json`；`--lane` / `--chan` / `--out`） |
+| [`bench_summary.lua`](bench_summary.lua) | 从 `bench_cont_fx --json`（或 stdin/文件）生成 Markdown 表；`--out tools/bench_summary.md` |
 | [`mdo.lua`](mdo.lua) / [`run_mdo.lua`](run_mdo.lua) | `@mdo` 预处理与 runner |
 
 性能数字与解读见 [`docs/性能与工具.md`](../docs/性能与工具.md)。
@@ -126,6 +128,48 @@ lua5.3 tools/trace_dump.lua --help
 
 注意：`opts.trace` **必须是 function**；传 `true` 会被忽略。全局可用 `fx.set_tracer` / `Sched.set_tracer`。  
 lane / chan / supervise 等事件已由 session 发出；本工具只负责 dump。
+
+## trace_export
+
+把 `opts.trace` 事件收集进 **JSON 文件**（对照 `trace_dump` 的 stdout dump）。
+
+```bash
+lua5.3 tools/trace_export.lua
+lua5.3 tools/trace_export.lua --lane --chan
+lua5.3 tools/trace_export.lua --out /tmp/trace.json
+lua5.3 tools/trace_export.lua --lane --chan --out tools/trace_out.json --stdout
+lua5.3 tools/trace_export.lua --wait 0.05 --help
+```
+
+默认路径 `tools/trace_out.json`（已在 `.gitignore`）。输出形状：`{"meta":{…},"events":[{…},…]}`。  
+`opts.trace` **必须是 function**。
+
+## bench_summary
+
+从 bench NDJSON 生成 Markdown 表（可提交 `tools/bench_summary.md` 或仅打印）。
+
+```bash
+lua5.3 tools/bench_summary.lua                              # 内部跑 bench --json，打印 MD
+lua5.3 tools/bench_summary.lua --out tools/bench_summary.md
+lua5.3 tools/bench_summary.lua 5000 --out tools/bench_summary.md
+lua5.3 tools/bench_cont_fx.lua --json | lua5.3 tools/bench_summary.lua --stdin
+lua5.3 tools/bench_summary.lua --from /tmp/bench.ndjson --out tools/bench_summary.md
+lua5.3 tools/bench_summary.lua --filter 'Cont >>' --out tools/bench_summary.md
+lua5.3 tools/bench_summary.lua --help
+```
+
+列：`name` / `n` / `sec` / `rate` / `kb_delta`。
+
+## ci_tools（scripts/）
+
+仓库根一键：
+
+```bash
+./scripts/ci_tools.sh
+ALLOW_BENCH_REGRESSION=1 ./scripts/ci_tools.sh   # bench --ci 回归时 soft-fail
+```
+
+顺序：`test_lua53.sh` → `flow_doctor --ci` → `bench_compare --ci` → `alloc_hotspot` smoke（N=100）。
 
 ## mdo
 

@@ -1,6 +1,6 @@
 # Lua Monad · CPS 续延
 
-**版本 `0.2.12-eng`**（工程可用：… / wait_until / wait_real(opt-in) / chan / supervise / **lane 命名子流** / **proxy（tabProxy 轻量）** / Unity Bootstrap / abort·iquit·seq·suspend / Cont 热路径 / sync fast-path·**bench/compare/alloc/doctor/trace 工具**；对照 [tabMachine对照](docs/tabMachine对照.md) / [性能与工具](docs/性能与工具.md)；路线收口见 [版本与路线](docs/版本与路线.md)；见 [CHANGELOG](CHANGELOG.md) / [工程可用验收](docs/工程可用验收.md)）。
+**版本 `0.2.13-eng`**（工程可用：… / wait_until / wait_real(opt-in) / chan / supervise / **lane 命名子流** / **proxy（tabProxy 轻量）** / Unity Bootstrap / abort·iquit·seq·suspend / Cont 热路径 / sync fast-path·**bench/compare/summary/alloc/doctor/trace·ci_tools**；对照 [tabMachine对照](docs/tabMachine对照.md) / [性能与工具](docs/性能与工具.md)；路线收口见 [版本与路线](docs/版本与路线.md)；见 [CHANGELOG](CHANGELOG.md) / [工程可用验收](docs/工程可用验收.md)）。
 
 本仓库用纯 Lua 模拟 Haskell 风格的 Monad，**主线是 Cont（续延）与 CPS**：
 
@@ -36,11 +36,15 @@ lua tests/run.lua   # 若 lua 已是 5.3+
 **周边工具**（仓库根目录）：
 
 ```bash
+./scripts/ci_tools.sh                     # 测试 + doctor + bench --ci + alloc smoke
+# ALLOW_BENCH_REGRESSION=1 ./scripts/ci_tools.sh   # bench 回归 soft-fail
 lua5.3 tools/bench_cont_fx.lua --alloc    # 热路径粗测（--json / --filter / --alloc）
 lua5.3 tools/bench_compare.lua --ci       # 对照 baseline；--write-baseline 更新
+lua5.3 tools/bench_summary.lua --out tools/bench_summary.md   # JSON → Markdown 表
 lua5.3 tools/alloc_hotspot.lua            # Cont >> 分配热点
 lua5.3 tools/flow_doctor.lua --ci         # 常见误配置检查（CI）
-lua5.3 tools/trace_dump.lua --lane --chan # trace 事件 dump
+lua5.3 tools/trace_dump.lua --lane --chan # trace 事件 dump（stdout）
+lua5.3 tools/trace_export.lua --lane --chan   # trace 事件导出 JSON（默认 tools/trace_out.json）
 ```
 
 详见 [性能与工具](docs/性能与工具.md) / [`tools/README.md`](tools/README.md)。

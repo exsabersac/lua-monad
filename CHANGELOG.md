@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.13-eng — 2026-09-21
+
+- **CI 工具链**
+  - 新增 `scripts/ci_tools.sh`：按序跑 `test_lua53.sh` → `flow_doctor --ci` → `bench_compare --ci` → `alloc_hotspot` smoke
+  - `ALLOW_BENCH_REGRESSION=1` 时 bench 回归 soft-fail（其余步骤仍硬失败）
+- **trace 导出**
+  - 新增 `tools/trace_export.lua`：跑小型 Cont/fx 场景，经 `opts.trace` 收集事件写入 JSON（默认 `tools/trace_out.json`）
+  - 支持 `--lane` / `--chan` / `--out PATH` / `--wait` / `--stdout`
+- **bench Markdown 摘要**
+  - 新增 `tools/bench_summary.lua`：从 `bench_cont_fx --json`（或 `--stdin` / `--from`）生成 Markdown 表；`--out tools/bench_summary.md`
+- 文档：[`tools/README.md`](tools/README.md)、[`docs/性能与工具.md`](docs/性能与工具.md)
+
 ## 0.2.12-eng — 2026-09-21
 
 - **性能基准对照**
