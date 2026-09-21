@@ -1,6 +1,6 @@
 # Lua Monad · CPS 续延
 
-**版本 `0.2.2-eng`**（工程可用：注册表 / 绑定 / bracket / 追踪 / 截止继承 / **wait_until + FrameScheduler**；见 [CHANGELOG](CHANGELOG.md) / [工程可用验收](docs/工程可用验收.md)）。
+**版本 `0.2.3-eng`**（工程可用：… / wait_until / **abort·iquit·seq·suspend**；对照 [tabMachine对照](docs/tabMachine对照.md)；见 [CHANGELOG](CHANGELOG.md) / [工程可用验收](docs/工程可用验收.md)）。
 
 本仓库用纯 Lua 模拟 Haskell 风格的 Monad，**主线是 Cont（续延）与 CPS**：
 
@@ -16,10 +16,11 @@
 1. [CPS 设计与工作原理](docs/CPS设计与原理.md) — Cont、callCC、定界续延、协程三层模型  
 2. [Cont 环境组合](docs/Cont环境组合.md) — `withEnv`、属性、`AfterStep`  
 3. [异步效果同步写法](docs/异步效果同步写法.md) — `fx.wait` / `connect` / `click`；**并行** `when_all`/`when_any`；**Fork/Join** `fork`/`join`  
-4. [工程对接与后续](docs/工程对接与后续.md) — 游戏时间 Scheduler、**GameSim**、**地牢突袭**、P0–P2；[工程可用验收](docs/工程可用验收.md)  
-5. [Unity 对接](docs/Unity对接.md) — Unity + Lua 5.3（xLua/tolua/slua）、scaled 游戏时间、主线程桥接、[`host/unity/`](host/unity/) 模板  
-6. [Lua 5.3 兼容性](docs/Lua53兼容性.md) — `__shr`、避免 5.4-only、`lua5.3 tests/run.lua`  
-7. [设计说明](docs/设计说明.md) · [API 参考](docs/API.md)
+4. [tabMachine 对照](docs/tabMachine对照.md) — abort/stop、iquit、seq、suspend 映射  
+5. [工程对接与后续](docs/工程对接与后续.md) — 游戏时间 Scheduler、**GameSim**、**地牢突袭**、P0–P2；[工程可用验收](docs/工程可用验收.md)  
+6. [Unity 对接](docs/Unity对接.md) — Unity + Lua 5.3（xLua/tolua/slua）、scaled 游戏时间、主线程桥接、[`host/unity/`](host/unity/) 模板  
+7. [Lua 5.3 兼容性](docs/Lua53兼容性.md) — `__shr`、避免 5.4-only、`lua5.3 tests/run.lua`  
+8. [设计说明](docs/设计说明.md) · [API 参考](docs/API.md)
 
 需要 **Lua 5.3+**（Unity / xLua / tolua / slua 多为 5.3；已在 5.3.6 验证）。在仓库根目录执行示例（脚本已设置 `package.path`）：
 

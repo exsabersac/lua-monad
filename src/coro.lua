@@ -2,17 +2,23 @@
 --
 -- 三层关系（详见 docs/设计说明.md / docs/CPS设计与原理.md）：
 --   1. Cont r a          — 续延单子本身
---   2. 答案类型 Answer   — Done | Yielded | Stopped | Failed，作为 Cont 的 r
---   3. Coro API          — yield / stop / fail / start / resume / step / run / collect
+--   2. 答案类型 Answer   — Done | Yielded | Stopped | Aborted | Failed，作为 Cont 的 r
+--   3. Coro API          — yield / stop / abort / fail / start / resume / step / run / collect
 --
 -- Answer 形状：
 --   Done    { tag = "done",    value }
 --   Yielded { tag = "yielded", value, cont }  -- cont 是「恢复时收到的值 → Answer」
 --   Stopped { tag = "stopped", reason? }      -- 主动停止 / 取消，不调用续延
+--   Aborted { tag = "aborted", reason? }      -- 异常中止（≠ stop）；join/when_all 视为失败传播
 --   Failed  { tag = "failed",  error }        -- 管道级失败，不调用续延
 --
+-- stop vs abort（对齐 tabMachine 语义子集）：
+--   · stop  — 合作式停止；父 join/when_all 得到 Stopped（非成功值）
+--   · abort — 异常中止；父 join/when_all 得到 Aborted（非成功值；不算 join 成功）
+--   · session cancel / force_stop 仍走 Stopped（取消），经 Yielded.abort 跑 iquit/finally
+--
 -- yield(v) 不调用当前续延，而是把续延本身装进 Yielded 返回；
--- stop / fail 同样不调用 k，直接返回终态答案（中止管道）。
+-- stop / abort / fail 同样不调用 k，直接返回终态答案（中止管道）。
 -- resume 再把新值喂给 Yielded.cont。
 
 local Cont = require("cont")
@@ -33,6 +39,10 @@ local function Stopped(reason)
   return { tag = "stopped", reason = reason }
 end
 
+local function Aborted(reason)
+  return { tag = "aborted", reason = reason }
+end
+
 local function Failed(err)
   return { tag = "failed", error = err }
 end
@@ -49,13 +59,17 @@ local function isStopped(a)
   return type(a) == "table" and a.tag == "stopped"
 end
 
+local function isAborted(a)
+  return type(a) == "table" and a.tag == "aborted"
+end
+
 local function isFailed(a)
   return type(a) == "table" and a.tag == "failed"
 end
 
--- 终态（不再 resume）：Done | Stopped | Failed
+-- 终态（不再 resume）：Done | Stopped | Aborted | Failed
 local function isTerminal(a)
-  return isDone(a) or isStopped(a) or isFailed(a)
+  return isDone(a) or isStopped(a) or isAborted(a) or isFailed(a)
 end
 
 ------------------------------------------------------------
@@ -78,6 +92,14 @@ local function stop(reason)
   end)
 end
 
+-- abort : reason? → Cont Answer b
+-- 异常中止：不调用当前续延 k，直接返回 Aborted（join 不算成功）
+local function abort(reason)
+  return Cont.wrap(function(_k)
+    return Aborted(reason)
+  end)
+end
+
 -- fail : err → Cont Answer b
 -- 失败中止：不调用当前续延 k，直接返回 Failed
 local function fail(err)
@@ -87,7 +109,7 @@ local function fail(err)
 end
 
 -- start : Cont Answer a → Answer
--- 顶层续延把最终值包成 Done；若 ma 已 stop/fail，则直接得到对应 Answer
+-- 顶层续延把最终值包成 Done；若 ma 已 stop/abort/fail，则直接得到对应 Answer
 local function start(ma)
   return Cont.runCont(ma, function(a)
     return Done(a)
@@ -101,8 +123,9 @@ local function resume(y, b)
 end
 
 -- force_stop : Answer → reason → Answer
--- 若 Yielded 带 with_finally 注入的 abort，则跑 finally 再 Stopped；否则直接 Stopped。
--- 供 session cancel / 实体销毁使用，避免裸写 Stopped 跳过清理。
+-- 若 Yielded 带 with_finally / with_iquit 注入的 abort，则跑 iquit→finally 再 Stopped；
+-- 否则直接 Stopped。供 session cancel / 实体销毁使用，避免裸写 Stopped 跳过清理。
+-- 注意：cancel 语义仍是 Stopped（不是 Aborted）；业务异常请用 Coro.abort / fx.abort。
 local function force_stop(answer, reason)
   if isYielded(answer) and type(answer.abort) == "function" then
     return answer.abort(reason)
@@ -111,12 +134,12 @@ local function force_stop(answer, reason)
 end
 
 -- step : Answer → b → Answer
--- 安全驱动：Done / Stopped / Failed 原样返回；Yielded 则 resume
+-- 安全驱动：Done / Stopped / Aborted / Failed 原样返回；Yielded 则 resume
 local function step(answer, value)
-  if isDone(answer) or isStopped(answer) or isFailed(answer) then
+  if isDone(answer) or isStopped(answer) or isAborted(answer) or isFailed(answer) then
     return answer
   end
-  assert(isYielded(answer), "step: expected Done, Yielded, Stopped, or Failed")
+  assert(isYielded(answer), "step: expected Done, Yielded, Stopped, Aborted, or Failed")
   return resume(answer, value)
 end
 
@@ -125,7 +148,7 @@ end
 ------------------------------------------------------------
 
 -- runEx : Cont Answer a → (yielded → resume_input) → status, payload
--- status ∈ "done" | "stopped" | "failed"
+-- status ∈ "done" | "stopped" | "aborted" | "failed"
 local function runEx(ma, handler)
   assert(type(handler) == "function", "runEx: handler must be a function")
   local answer = start(ma)
@@ -137,6 +160,8 @@ local function runEx(ma, handler)
     return "done", answer.value
   elseif isStopped(answer) then
     return "stopped", answer.reason
+  elseif isAborted(answer) then
+    return "aborted", answer.reason
   elseif isFailed(answer) then
     return "failed", answer.error
   end
@@ -144,7 +169,7 @@ local function runEx(ma, handler)
 end
 
 -- run : Cont Answer a → handler → final_value  |  nil, answer
--- 成功（Done）返回最终 value；Stopped/Failed 返回 nil, answer（第二返回值为 Answer 表）
+-- 成功（Done）返回最终 value；Stopped/Aborted/Failed 返回 nil, answer
 local function run(ma, handler)
   assert(type(handler) == "function", "run: handler must be a function")
   local answer = start(ma)
@@ -155,14 +180,14 @@ local function run(ma, handler)
   if isDone(answer) then
     return answer.value
   end
-  if isStopped(answer) or isFailed(answer) then
+  if isStopped(answer) or isAborted(answer) or isFailed(answer) then
     return nil, answer
   end
   error("run: unexpected answer tag=" .. tostring(answer and answer.tag), 2)
 end
 
 -- collect : Cont Answer a → yields, final[, answer]
--- 记录每次 yield 载荷，resume 用 true；Stopped/Failed 时 final 为 nil，第三返回值为 answer
+-- 记录每次 yield 载荷，resume 用 true；Stopped/Aborted/Failed 时 final 为 nil，第三返回值为 answer
 local function collect(ma)
   local yields = {}
   local final, ans = run(ma, function(v)
@@ -179,14 +204,17 @@ return {
   Done = Done,
   Yielded = Yielded,
   Stopped = Stopped,
+  Aborted = Aborted,
   Failed = Failed,
   isDone = isDone,
   isYielded = isYielded,
   isStopped = isStopped,
+  isAborted = isAborted,
   isFailed = isFailed,
   isTerminal = isTerminal,
   yield = yield,
   stop = stop,
+  abort = abort,
   fail = fail,
   start = start,
   resume = resume,

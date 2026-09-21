@@ -101,4 +101,47 @@ local r3 = fx.run(long_flow(nil), instant, {
 assert(r3.stopped and r3.reason == "cancelled")
 print("结果: cancelled after ticks=", ticks)
 
+
+------------------------------------------------------------
+-- 4. fx.abort：join → aborted；iquit 先于 finally
+------------------------------------------------------------
+print("\n=== fx.abort + iquit/finally ===")
+local tostring = tostring
+local log = {}
+local child = Cont.withEnv(function(_ENV)
+  function body(_)
+    return fx.wait(0.01) >> function(_)
+      print('  [child] fx.abort("raid-fail")')
+      return fx.abort("raid-fail")
+    end
+  end
+  function iquit(outcome)
+    log[#log + 1] = "iquit:" .. tostring(outcome.status)
+    print("  [iquit]", outcome.status)
+  end
+  function finally(outcome)
+    log[#log + 1] = "finally:" .. tostring(outcome.status)
+    print("  [finally]", outcome.status)
+  end
+end)
+
+local r4 = fx.run(fx.fork(child(nil)) >> function(h)
+  return fx.join(h)
+end, instant)
+assert(r4.ok == false and r4.aborted == true)
+assert(r4.reason == "raid-fail")
+assert(log[1] == "iquit:aborted" and log[2] == "finally:aborted")
+print("结果: aborted reason=", tostring(r4.reason), " order=", log[1], "→", log[2])
+
+------------------------------------------------------------
+-- 5. fx.seq ≈ tabMachine ..
+------------------------------------------------------------
+print("\n=== fx.seq ===")
+local r5 = fx.run(fx.seq({
+  Cont.unit(1),
+  Cont.unit(2) >> function(x) return Cont.unit(x * 10) end,
+}), instant)
+assert(r5.ok and r5.value == 20)
+print("seq 最后值:", r5.value)
+
 print("\nfx_stop_cancel OK")

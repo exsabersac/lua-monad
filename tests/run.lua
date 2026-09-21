@@ -2325,6 +2325,160 @@ end
 
 
 
+
+------------------------------------------------------------
+-- 0.2.3-eng：abort / iquit / seq / suspend
+------------------------------------------------------------
+do
+  io.stdout:write("abort/iquit/seq/suspend... ")
+  local fx = require("fx")
+  local Sched = require("fx_sched")
+  local Scheduler = require("scheduler")
+  local GameSim = require("game_sim")
+  local cont_env = require("cont_env")
+  -- withEnv(_ENV) 会遮蔽全局；钩子内请用外层 upvalue
+  local tostring = tostring
+
+  -- Coro.Aborted
+  local a = Coro.start(Coro.abort("x"))
+  assert_true(Coro.isAborted(a) and a.reason == "x", "coro abort Answer")
+  local st, payload = Coro.runEx(Coro.abort("y"), function() end)
+  assert_eq(st, "aborted", "coro runEx aborted")
+  assert_eq(payload, "y", "coro runEx aborted reason")
+
+  -- fork 子 abort → join 失败（aborted），finally 已跑
+  local log = {}
+  local child = Cont.withEnv(function(_ENV)
+    function step(_)
+      return fx.wait(0.01) >> function(_)
+        return fx.abort("child-boom")
+      end
+    end
+    function finally(outcome)
+      log[#log + 1] = "f:" .. tostring(outcome.status)
+    end
+  end)
+  local parent = fx.fork(child(nil)) >> function(h)
+    return fx.join(h)
+  end
+  local clock = Scheduler.VirtualClock()
+  local flow = Sched.start_session(parent, {}, { scheduler = clock })
+  clock.advance(0.02)
+  assert_true(flow.done, "abort join done")
+  assert_true(flow.result.aborted and flow.result.reason == "child-boom",
+    "abort join → aborted")
+  assert_eq(log[1], "f:aborted", "child finally on abort")
+
+  -- when_all 子 abort → 传播
+  local r_wa = fx.run(fx.when_all({
+    Cont.unit(1),
+    fx.abort("wa-abort"),
+  }), { wait = function() return true end })
+  assert_true(r_wa.aborted and r_wa.reason == "wa-abort", "when_all abort")
+
+  -- iquit 在 cancel 时先于 finally；Done 跳过 iquit
+  log = {}
+  local pipe = Cont.withEnv(function(_ENV)
+    function step(x)
+      return Coro.yield({ kind = "wait", seconds = 1 }) >> function(_)
+        return Cont.unit(x)
+      end
+    end
+    function iquit(outcome)
+      log[#log + 1] = "iq:" .. tostring(outcome.status)
+    end
+    function finally(outcome)
+      log[#log + 1] = "f:" .. tostring(outcome.status)
+    end
+  end)
+  local ans = Coro.start(pipe(0))
+  assert_true(Coro.isYielded(ans), "iquit pipe yielded")
+  ans = Coro.force_stop(ans, "cancelled")
+  assert_true(Coro.isStopped(ans), "force_stop Stopped")
+  assert_eq(log[1], "iq:stopped", "iquit before finally")
+  assert_eq(log[2], "f:stopped", "finally after iquit")
+
+  log = {}
+  local ok_pipe = Cont.withEnv(function(_ENV)
+    function step(x) return x + 1 end
+    function iquit(outcome)
+      log[#log + 1] = "iq"
+    end
+    function finally(outcome)
+      log[#log + 1] = "f:" .. tostring(outcome.status)
+    end
+  end)
+  assert_eq(Cont.evalCont(ok_pipe(1)), 2, "iquit skip on done value")
+  assert_eq(#log, 1, "iquit skipped on Done")
+  assert_eq(log[1], "f:done", "finally on Done")
+
+  -- Cont.iquit_finally API
+  log = {}
+  local m = Cont.iquit_finally(
+    Coro.abort("z"),
+    function(o) log[#log + 1] = "iq:" .. o.status end,
+    function(o) log[#log + 1] = "f:" .. o.status end
+  )
+  st, payload = Coro.runEx(m, function() end)
+  assert_eq(st, "aborted", "iquit_finally status")
+  assert_eq(log[1], "iq:aborted", "iquit_finally iquit first")
+  assert_eq(log[2], "f:aborted", "iquit_finally finally second")
+
+  -- fx.seq
+  local r_seq = fx.run(fx.seq({
+    Cont.unit(1) >> function(x) return Cont.unit(x + 1) end,
+    Cont.unit(10) >> function(x) return Cont.unit(x + 5) end,
+  }), {})
+  assert_true(r_seq.ok and r_seq.value == 15, "fx.seq last value")
+  local r_empty = fx.run(fx.seq({}), {})
+  assert_true(r_empty.ok and r_empty.value == nil, "fx.seq empty → nil")
+
+  -- 顺序：seq 左到右执行副作用
+  log = {}
+  local function mark(n)
+    return Cont.wrap(function(k)
+      log[#log + 1] = n
+      return k(n)
+    end)
+  end
+  r_seq = fx.run(fx.seq({ mark(1), mark(2), mark(3) }), {})
+  assert_true(r_seq.ok and r_seq.value == 3, "fx.seq mark value")
+  assert_eq(log[1], 1, "seq order1")
+  assert_eq(log[2], 2, "seq order2")
+  assert_eq(log[3], 3, "seq order3")
+
+  -- suspend 冻结 wait，resume 继续（VirtualClock / FrameScheduler）
+  clock = Scheduler.VirtualClock()
+  flow = Sched.start_session(fx.wait(0.5) >> function(_)
+    return Cont.unit("awake")
+  end, {}, { scheduler = clock })
+  assert_true(not flow.done, "suspend wait pending")
+  flow.suspend()
+  assert_true(flow.is_suspended(), "is_suspended")
+  clock.advance(0.6)
+  assert_true(not flow.done, "suspended: wait not fired")
+  flow.resume()
+  assert_true(flow.done and flow.result.ok and flow.result.value == "awake",
+    "resume continues wait")
+
+  -- GameSim:suspend_flow / resume_flow
+  local sim = GameSim.new({ dt = 0.05 })
+  flow = sim:start_flow(nil, fx.wait(0.2) >> function(_)
+    return Cont.unit(true)
+  end)
+  sim:suspend_flow(flow)
+  for _ = 1, 10 do sim:tick(0.05) end
+  assert_true(not flow.done, "GameSim suspend freezes")
+  sim:resume_flow(flow)
+  assert_true(flow.done and flow.result.ok, "GameSim resume continues")
+
+  assert_true(type(cont_env.with_iquit) == "function", "cont_env.with_iquit")
+  assert_true(type(fx.abort) == "function" and type(fx.seq) == "function", "fx.abort/seq")
+
+  io.stdout:write("ok\n")
+end
+
+
 ------------------------------------------------------------
 io.stdout:write("\n")
 if failures > 0 then

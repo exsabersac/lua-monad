@@ -197,30 +197,44 @@ function M.protect(ma)
   end)
 end
 
--- withEnv / finally / init_finally：延迟加载 cont_env，避免循环 require。
+-- withEnv / finally / init_finally / iquit_finally：延迟加载 cont_env，避免循环 require。
 -- 首次调用后会被替换为真正实现（cont_env 加载时也会挂载到 Cont）。
-function M.withEnv(body)
-  local ce = require("cont_env")
+local function _install_cont_env(ce)
   M.withEnv = ce.withEnv
   M.finally = ce.with_finally
   M.init_finally = ce.init_finally
+  M.with_iquit = ce.with_iquit
+  M.iquit_finally = ce.iquit_finally
+end
+
+function M.withEnv(body)
+  local ce = require("cont_env")
+  _install_cont_env(ce)
   return ce.withEnv(body)
 end
 
 function M.finally(ma, cleanup)
   local ce = require("cont_env")
-  M.withEnv = ce.withEnv
-  M.finally = ce.with_finally
-  M.init_finally = ce.init_finally
+  _install_cont_env(ce)
   return ce.with_finally(ma, cleanup)
 end
 
 function M.init_finally(ma, init, cleanup)
   local ce = require("cont_env")
-  M.withEnv = ce.withEnv
-  M.finally = ce.with_finally
-  M.init_finally = ce.init_finally
+  _install_cont_env(ce)
   return ce.init_finally(ma, init, cleanup)
+end
+
+function M.with_iquit(ma, iquit_fn)
+  local ce = require("cont_env")
+  _install_cont_env(ce)
+  return ce.with_iquit(ma, iquit_fn)
+end
+
+function M.iquit_finally(ma, iquit, cleanup)
+  local ce = require("cont_env")
+  _install_cont_env(ce)
+  return ce.iquit_finally(ma, iquit, cleanup)
 end
 
 --- bracket(acquire, use, release) — 资源作用域（同 fx.with_resource）

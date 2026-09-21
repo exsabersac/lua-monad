@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.3-eng — 2026-09-21
+
+- **abort vs stop**：`fx.abort` / `Coro.Aborted`；`fx.stop` 仍为 Stopped；cancel/`force_stop` 仍 Stopped
+- fork 子 **abort** → `join` / `when_all` / `when_any` 传播 `aborted`（不算成功值）；见 [`docs/tabMachine对照.md`](docs/tabMachine对照.md)
+- **iquit**：固定名 `iquit`/`__iquit__`、`__IQuit__`；`Cont.with_iquit` / `Cont.iquit_finally`；quit 路径 **先于** finally，Done 跳过
+- **`fx.seq(mas)`**：左→右串联（≈ tabMachine `..` / g_t.seq）
+- **suspend/resume**：`flow:suspend()` / `flow:resume()`；`GameSim:suspend_flow` / `resume_flow`（按 flow 冻结 wait 兑现）
+- 工具：`tools/bench_cont_fx.lua`（热路径粗测）、`tools/trace_dump.lua`（trace 事件 dump）
+- 验收 / README / 对照文档同步
+
+
 ## 0.2.2-eng — 2026-09-21
 
 - **`fx.wait_until(pred, opts?)`**：每 tick（或 `opts.interval`）poll 谓词；真值 resume 该返回值

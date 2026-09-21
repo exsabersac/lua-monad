@@ -4,7 +4,10 @@
 --   1. 业务代码用 Cont.withEnv 写成看起来同步的步骤管道（open → wait → click → …）。
 --   2. 真正的 wait / 网络 / 点击等「效果」并不在业务里执行，而是 Coro.yield 一条
 --      Yielded 请求（{ kind=..., ... }）；外部解释器（fx.run 的 handlers）兑现后再 resume。
---   3. fx.stop / fx.fail 走 Coro Answer 终态（Stopped / Failed），中止管道而不再调 handler。
+--   3. fx.stop / fx.abort / fx.fail 走 Coro Answer 终态（Stopped / Aborted / Failed），中止管道而不再调 handler。
+--      stop=合作式停止；abort=异常中止（fork 子 abort 时 join/when_all 传播 Aborted，不算成功值）。
+--      opts.cancel_siblings：join 成功后取消兄弟；若兄弟正在 abort/stop，waiter 仍以先到终态为准。
+--   3b. fx.seq(mas)：左到右 >> 串联 Cont，返回最后值（≈ tabMachine `..` / g_t.seq）；空 → unit(nil)。
 --   4. fx.when_all / fx.when_any 把并行组合编成 yield；由调度器时间轮并发驱动（对齐 C# WhenAll/WhenAny）。
 --   5. fx.fork / fx.join / fx.join_handles：非结构化并发（先 fork，中间可做别的事，再 join）。
 --   6. fx.map_parallel：有限并发池（滑动窗口 fork/join，结果按输入顺序）。
@@ -23,7 +26,7 @@
 --
 -- 重要区分：
 --   Cont 上的 Coro.yield ≠ Lua 原生 coroutine.yield。
---   Coro 用 Cont 编码答案类型 Done | Yielded | Stopped | Failed；业务 API 请走本模块 / Coro，
+--   Coro 用 Cont 编码答案类型 Done | Yielded | Stopped | Aborted | Failed；业务 API 请走本模块 / Coro，
 --   不要当原生协程 perform/runDo 用（本库主线已放弃 native perform/runDo）。
 --
 -- 依赖：cont.lua、coro.lua、fx_sched.lua、fx_registry.lua、fx_flow.lua
@@ -106,9 +109,17 @@ function fx.click(target)
 end
 
 -- stop : reason? → Cont Answer b
--- 主动中止：返回 Coro.Stopped，不调用后续续延 / handler
+-- 合作式中止：返回 Coro.Stopped，不调用后续续延 / handler。
+-- 父 join / join_handles / when_all 得到 Stopped（非成功值）；见 docs/tabMachine对照.md。
 function fx.stop(reason)
   return Coro.stop(reason)
+end
+
+-- abort : reason? → Cont Answer b
+-- 异常中止：返回 Coro.Aborted。fork 子任务 abort 时，join/when_all **不算成功**，
+-- 向 waiter 传播 Aborted（与 stop 一样非成功，但 tag 可区分；cancel 仍用 Stopped）。
+function fx.abort(reason)
+  return Coro.abort(reason)
 end
 
 -- fail : err → Cont Answer b
@@ -118,6 +129,28 @@ function fx.fail(err)
 end
 
 fx.throw = fx.fail -- 别名：与 Cont.throw 对照时可用 fx.throw 表示 Coro 层失败
+
+------------------------------------------------------------
+-- 顺序组合（≈ tabMachine `..` / g_t.seq）
+------------------------------------------------------------
+
+-- seq : { Cont Answer a, ... } → Cont Answer last
+-- 左到右用 >> 串联（忽略中间值，保留最后 Cont 的值）；空数组 → Cont.unit(nil)
+function fx.seq(mas)
+  assert(type(mas) == "table", "fx.seq: expected array of Cont Answer")
+  local n = #mas
+  if n == 0 then
+    return Cont.unit(nil)
+  end
+  local m = mas[1]
+  for i = 2, n do
+    local next_m = mas[i]
+    m = m >> function(_)
+      return next_m
+    end
+  end
+  return m
+end
 
 ------------------------------------------------------------
 -- 并行组合子（Cont 层，可放进 withEnv 管道）
@@ -162,8 +195,9 @@ end
 fx.spawn = fx.fork -- 别名：≈ Task.Run / 启动子任务
 
 -- join : Handle → opts? → Cont Answer a
--- 等到该 fork 子任务 Done，resume 其值；Failed/Stopped 向父传播
--- opts.cancel_siblings=true：join 成功后，停止同一 fork 父任务下其它未完成兄弟
+-- 等到该 fork 子任务 Done，resume 其值；Failed/Stopped/Aborted 向父传播（abort≠成功）
+-- opts.cancel_siblings=true：join **成功**后，停止同一 fork 父任务下其它未完成兄弟
+--   （兄弟若先 abort/stop，本 join 会先失败，不会走到 cancel_siblings）
 -- Yield: { kind="join", handle=h, cancel_siblings?=bool }
 function fx.join(handle, opts)
   assert(type(handle) == "table" and handle.id ~= nil,

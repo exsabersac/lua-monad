@@ -14,8 +14,9 @@
 --   3. 非函数赋值 → 普通字段，不进管道（常量/表 ok）。
 --   4. 助手：步内 local；或 `__Helper__()` / `__NotStep__()` 标注后再赋函数（存 env 但不进 >>；不 lift）。
 --   5. 固定名 `init` / `__init__` 与属性 `__Init__`：非步骤；在管道前按定义序跑一遍（可改写输入；普通返回值亦经 Cont.unit）。
---   6. 固定名 `finally` / `__final__` 与属性 `__Finally__`：非步骤；在管道/协程会话退出时跑清理（忽略值时可返回 true 等普通值）。
---   7. 零步骤时 composed ≡ Cont.unit（恒等管道）；若仅有 init/finally 仍包一层生命周期。
+--   6. 固定名 `finally` / `__final__` 与属性 `__Finally__`：非步骤；会话退出时跑清理（Done/Stopped/Aborted/Failed 皆跑；忽略值时可返回 true 等普通值）。
+--   6b. 固定名 `iquit` / `__iquit__` 与属性 `__IQuit__`：非步骤；仅在 Stopped/Aborted/Failed/cancel 路径、**先于** finally 跑（对齐 tabMachine iquit；成功 Done 跳过）。
+--   7. 零步骤时 composed ≡ Cont.unit（恒等管道）；若仅有 init/iquit/finally 仍包一层生命周期。
 --   8. 返回值为主；env.pipe / env.compose 指向同一 composed 便于自省。
 --   9. body 返回后会对步骤表做快照；之后再改 env 不影响已返回的 composed。
 --  10. 属性（`__Name__()`）排队，作用于**紧随其后**的那个函数赋值（PLoop 风格）；lift 在属性包装之前，故属性看到的是 Cont 步进。
@@ -54,7 +55,8 @@ end
 --- pending 是否把下一函数标成非管道步骤（helper / init / finally）
 local function pending_marks_non_step(pending)
   for _, item in ipairs(pending) do
-    if item.kind == "helper" or item.kind == "finally" or item.kind == "init" then
+    if item.kind == "helper" or item.kind == "finally" or item.kind == "init"
+        or item.kind == "iquit" then
       return true
     end
   end
@@ -80,11 +82,13 @@ local ATTR_KEYS = {
   __Catch__ = true,
   __Finally__ = true,
   __Init__ = true,
+  __IQuit__ = true,
 }
 
--- 固定名：写入 env 时自动视为 init / finally（非管道步骤）
+-- 固定名：写入 env 时自动视为 init / finally / iquit（非管道步骤）
 local INIT_NAMES = { init = true, __init__ = true }
 local FINALLY_NAMES = { finally = true, __final__ = true }
+local IQUIT_NAMES = { iquit = true, __iquit__ = true }
 
 ------------------------------------------------------------
 -- 独立属性构造器：cont_env.attrs.__X__(...)(step) → new_step
@@ -258,10 +262,12 @@ end
 --   outcome = { status="done", value=a }
 --            | { status="failed", error=e }
 --            | { status="stopped", reason=r }
+--            | { status="aborted", reason=r }
+-- iquit(outcome) → Cont|value：仅 stopped/aborted/failed；在 finally **之前**跑。
 -- init(x) → Cont|value：可改写进入管道的输入；普通值经 Cont.unit 包装。
 --
 -- 清理失败教学规则：cleanup 若 Cont.throw / 返回 Failed，则**覆盖**原结果为 Failed；
--- 成功清理后传播原 Done 值 / Stopped / Failed。
+-- 成功清理后传播原 Done 值 / Stopped / Aborted / Failed。
 
 local function ensure_cont(x)
   if x == nil then
@@ -286,7 +292,8 @@ end
 
 --- with_finally(ma, cleanup) → Cont
 -- 在 Cont 正常成功、Cont.throw（经本层 catch）、以及 Coro Answer 的
--- Done|Stopped|Failed 终态上调用 cleanup；Yielded 时推迟到真正终态。
+-- Done|Stopped|Aborted|Failed 终态上调用 cleanup；Yielded 时推迟到真正终态。
+-- Yielded.abort（force_stop/cancel）走 status=stopped 清理，保证 finally/iquit 执行。
 function cont_env.with_finally(ma, cleanup)
   assert(type(cleanup) == "function", "with_finally: cleanup must be a function")
 
@@ -308,7 +315,7 @@ function cont_env.with_finally(ma, cleanup)
           end,
         }
       end
-      if tag == "failed" or tag == "stopped" then
+      if tag == "failed" or tag == "stopped" or tag == "aborted" then
         -- 清理自身终态覆盖原结果
         return res
       end
@@ -361,6 +368,11 @@ function cont_env.with_finally(ma, cleanup)
       end
       if tag == "stopped" then
         return run_cleanup_then({ status = "stopped", reason = res.reason }, function()
+          return res
+        end)
+      end
+      if tag == "aborted" then
+        return run_cleanup_then({ status = "aborted", reason = res.reason }, function()
           return res
         end)
       end
@@ -419,8 +431,137 @@ function cont_env.init_finally(ma, init, cleanup)
   return m
 end
 
---- 组合 a→Cont：先 inits（定义序，可改写 x），再 steps，退出时 cleanups。
-local function compose_lifecycle(order, steps, inits, cleanups)
+--- with_iquit(ma, iquit_fn) → Cont
+-- 仅在 Stopped / Aborted / Failed（含 force_stop/cancel）上调用 iquit_fn；
+-- 成功 Done **跳过**（对齐 tabMachine：iquit 用于 shutdown，final 总是跑）。
+-- 与 with_finally 嵌套时请把本层放内、finally 放外，使 abort 路径为 iquit → finally。
+function cont_env.with_iquit(ma, iquit_fn)
+  assert(type(iquit_fn) == "function", "with_iquit: iquit_fn must be a function")
+
+  return Cont.wrap(function(outer_k)
+    local ran = false
+
+    local function drain_iquit_result(res, after)
+      local tag = answer_tag(res)
+      if type(res) == "table" and res.__finally_continue then
+        return after()
+      end
+      if tag == "yielded" then
+        return {
+          tag = "yielded",
+          value = res.value,
+          cont = function(b)
+            return drain_iquit_result(res.cont(b), after)
+          end,
+        }
+      end
+      if tag == "failed" or tag == "stopped" or tag == "aborted" then
+        return res
+      end
+      if tag == "done" then
+        return after()
+      end
+      return after()
+    end
+
+    local function run_iquit_then(outcome, after)
+      if ran then
+        return after()
+      end
+      ran = true
+      local cu = ensure_cont(iquit_fn(outcome))
+      local protected = Cont.catch(cu, function(err)
+        return Cont.wrap(function(_k)
+          return { tag = "failed", error = err }
+        end)
+      end)
+      local res = Cont.unwrap(protected)(function(_v)
+        return { __finally_continue = true }
+      end)
+      return drain_iquit_result(res, after)
+    end
+
+
+    local function wrap_result(res)
+      local tag = answer_tag(res)
+      if tag == "yielded" then
+        return {
+          tag = "yielded",
+          value = res.value,
+          cont = function(b)
+            return wrap_result(res.cont(b))
+          end,
+          abort = function(reason)
+            -- cancel / force_stop：走 iquit（status=stopped），再交还内层 abort 结果
+            if type(res.abort) == "function" then
+              local inner = res.abort(reason)
+              return run_iquit_then({ status = "stopped", reason = reason }, function()
+                return inner
+              end)
+            end
+            return run_iquit_then({ status = "stopped", reason = reason }, function()
+              return { tag = "stopped", reason = reason }
+            end)
+          end,
+        }
+      end
+      if tag == "stopped" then
+        return run_iquit_then({ status = "stopped", reason = res.reason }, function()
+          return res
+        end)
+      end
+      if tag == "aborted" then
+        return run_iquit_then({ status = "aborted", reason = res.reason }, function()
+          return res
+        end)
+      end
+      if tag == "failed" then
+        return run_iquit_then({ status = "failed", error = res.error }, function()
+          return res
+        end)
+      end
+      if tag == "done" then
+        -- 成功：跳过 iquit，直接传播
+        return res
+      end
+      return res
+    end
+
+    local body = Cont.catch(ma, function(err)
+      return Cont.wrap(function(k)
+        return run_iquit_then({ status = "failed", error = err }, function()
+          return Cont.unwrap(Cont.throw(err))(k)
+        end)
+      end)
+    end)
+
+    local res = Cont.unwrap(body)(function(a)
+      -- Done：不跑 iquit，直接交给外层（外层 finally 仍会跑）
+      return outer_k(a)
+    end)
+    return wrap_result(res)
+  end)
+end
+
+--- iquit_finally(ma, iquit?, cleanup?) → Cont
+-- 先挂 iquit（仅 quit 路径），再挂 finally（总是）。cancel 时顺序：iquit → finally。
+function cont_env.iquit_finally(ma, iquit, cleanup)
+  local m = ma
+  if iquit ~= nil then
+    assert(type(iquit) == "function", "iquit_finally: iquit must be a function or nil")
+    m = cont_env.with_iquit(m, iquit)
+  end
+  if cleanup ~= nil then
+    assert(type(cleanup) == "function", "iquit_finally: cleanup must be a function or nil")
+    m = cont_env.with_finally(m, cleanup)
+  end
+  return m
+end
+
+--- 组合 a→Cont：先 inits（定义序，可改写 x），再 steps；退出时 iquits（仅 quit）再 cleanups。
+local function compose_lifecycle(order, steps, inits, cleanups, iquits)
+
+  iquits = iquits or {}
   return function(x)
     local m = Cont.unit(x)
     for _, item in ipairs(inits) do
@@ -434,6 +575,19 @@ local function compose_lifecycle(order, steps, inits, cleanups)
       if type(step) == "function" then
         m = m >> step
       end
+    end
+    if #iquits > 0 then
+      local iquit_fns = iquits
+      m = cont_env.with_iquit(m, function(outcome)
+        local c = Cont.unit(true)
+        for _, item in ipairs(iquit_fns) do
+          local fn = item.fn
+          c = c >> function(_)
+            return ensure_cont(fn(outcome))
+          end
+        end
+        return c
+      end)
     end
     if #cleanups == 0 then
       return m
@@ -475,6 +629,7 @@ end
 local HELPER_SENTINEL = { __attr_helper = true }
 local FINALLY_SENTINEL = { __attr_finally = true }
 local INIT_SENTINEL = { __attr_init = true }
+local IQUIT_SENTINEL = { __attr_iquit = true }
 
 cont_env.attrs = {
   --- 标记下一函数为助手（独立 API 返回 sentinel；env 内排队）
@@ -491,6 +646,10 @@ cont_env.attrs = {
   --- 标记下一函数为 init（非步骤；管道前跑，可改写输入）
   __Init__ = function()
     return INIT_SENTINEL
+  end,
+  --- 标记下一函数为 iquit（非步骤；仅 quit 路径、先于 finally）
+  __IQuit__ = function()
+    return IQUIT_SENTINEL
   end,
   --- __Wrap__(wrapper)(step) → new_step
   __Wrap__ = wrap_wrap,
@@ -534,11 +693,12 @@ local function compose_steps(order, steps)
 end
 
 --- 从 pending 队列折叠包装器到 value
--- 返回 new_fn, is_helper, is_finally, is_init, after_list, before_list
+-- 返回 new_fn, is_helper, is_finally, is_init, is_iquit, after_list, before_list
 local function apply_pending(pending, value)
   local is_helper = false
   local is_finally = false
   local is_init = false
+  local is_iquit = false
   local fn = value
   local after_list = {}
   local before_list = {}
@@ -549,6 +709,8 @@ local function apply_pending(pending, value)
       is_finally = true
     elseif item.kind == "init" then
       is_init = true
+    elseif item.kind == "iquit" then
+      is_iquit = true
     elseif item.kind == "wrap" then
       fn = item.apply(fn)
     elseif item.kind == "after_step" then
@@ -557,7 +719,7 @@ local function apply_pending(pending, value)
       before_list[#before_list + 1] = item.name
     end
   end
-  return fn, is_helper, is_finally, is_init, after_list, before_list
+  return fn, is_helper, is_finally, is_init, is_iquit, after_list, before_list
 end
 
 --- 构造挂到 env 上的属性构造器（写入 pending）
@@ -574,6 +736,10 @@ local function make_env_attr_ctors(pending)
     pending[#pending + 1] = { kind = "init" }
   end
 
+  local function queue_iquit()
+    pending[#pending + 1] = { kind = "iquit" }
+  end
+
   return {
     __Helper__ = function()
       queue_helper()
@@ -586,6 +752,9 @@ local function make_env_attr_ctors(pending)
     end,
     __Init__ = function()
       queue_init()
+    end,
+    __IQuit__ = function()
+      queue_iquit()
     end,
     __Wrap__ = function(wrapper)
       local apply = wrap_wrap(wrapper)
@@ -748,9 +917,9 @@ end
 -- 步骤可为普通 a→b（自动 Cont.unit 提升）或 a→Cont（mt 判定，原样）。
 -- 可用 `__Helper__()` / `__Wrap__` / `__Before__` / `__After__` / `__Until__` / `__Timeout__` /
 -- `__Retry__` / `__Require__` / `__Trace__` / `__Catch__` / `__AfterStep__` / `__BeforeStep__` /
--- `__Init__` / `__Finally__` 标注下一函数。
--- 固定名 `init`/`__init__`、`finally`/`__final__` 亦为非步骤生命周期钩子（返回值亦可为普通值）。
--- 返回 composed：a → Cont r z；顺序为 inits → steps →（退出时）cleanups。
+-- `__Init__` / `__IQuit__` / `__Finally__` 标注下一函数。
+-- 固定名 `init`/`__init__`、`iquit`/`__iquit__`、`finally`/`__final__` 亦为非步骤生命周期钩子。
+-- 返回 composed：a → Cont r z；顺序为 inits → steps →（quit 时）iquits →（退出时）cleanups。
 function cont_env.withEnv(body)
   assert(type(body) == "function", "withEnv: body must be a function")
 
@@ -759,7 +928,8 @@ function cont_env.withEnv(body)
   local constraints = {} -- name → { after = {..}, before = {..} }
   local inits = {} -- { {name=, fn=}, ... } 定义序
   local cleanups = {} -- { {name=, fn=}, ... } 定义序
-  local data = {} -- 普通字段存储（含助手/init/finally 函数、最终 pipe/compose）
+  local iquits = {} -- { {name=, fn=}, ... } 定义序；quit 路径先于 finally
+  local data = {} -- 普通字段存储（含助手/init/iquit/finally 函数、最终 pipe/compose）
   local pending = {} -- 排队中的属性 applicators / helper flags / 顺序约束
   local attr_ctors = make_env_attr_ctors(pending)
 
@@ -778,27 +948,31 @@ function cont_env.withEnv(body)
       end
 
       if type(value) == "function" then
-        local is_helper, is_finally, is_init = false, false, false
+        local is_helper, is_finally, is_init, is_iquit = false, false, false, false
         local after_list, before_list = {}, {}
 
         -- 管道步骤：先 lift，再折属性，使 __Before__/__Trace__ 等看到 Cont 步进。
-        -- helper / init / finally 不按步骤 lift（init/finally 返回值由 ensure_cont 处理）。
+        -- helper / init / iquit / finally 不按步骤 lift（返回值由 ensure_cont 处理）。
         local non_step = INIT_NAMES[key]
           or FINALLY_NAMES[key]
+          or IQUIT_NAMES[key]
           or pending_marks_non_step(pending)
         if not non_step then
           value = lift_step(value)
         end
 
         if #pending > 0 then
-          value, is_helper, is_finally, is_init, after_list, before_list =
+          value, is_helper, is_finally, is_init, is_iquit, after_list, before_list =
             apply_pending(pending, value)
           clear_pending(pending)
         end
 
-        -- 固定名优先视为 init / finally
+        -- 固定名优先视为 init / iquit / finally
         if INIT_NAMES[key] then
           is_init = true
+        end
+        if IQUIT_NAMES[key] then
+          is_iquit = true
         end
         if FINALLY_NAMES[key] then
           is_finally = true
@@ -815,11 +989,19 @@ function cont_env.withEnv(body)
         if is_finally then
           strip_from_steps()
           remove_named(inits, key)
+          remove_named(iquits, key)
           upsert_named(cleanups, key, value)
+          rawset(data, key, value)
+        elseif is_iquit then
+          strip_from_steps()
+          remove_named(inits, key)
+          remove_named(cleanups, key)
+          upsert_named(iquits, key, value)
           rawset(data, key, value)
         elseif is_init then
           strip_from_steps()
           remove_named(cleanups, key)
+          remove_named(iquits, key)
           upsert_named(inits, key, value)
           rawset(data, key, value)
         elseif is_helper then
@@ -827,10 +1009,12 @@ function cont_env.withEnv(body)
           strip_from_steps()
           remove_named(inits, key)
           remove_named(cleanups, key)
+          remove_named(iquits, key)
           rawset(data, key, value)
         else
           remove_named(inits, key)
           remove_named(cleanups, key)
+          remove_named(iquits, key)
           if steps[key] == nil then
             -- 若此前是 helper-only，不算「首次步骤」以外的特殊情况：直接加入 order
             order[#order + 1] = key
@@ -861,6 +1045,7 @@ function cont_env.withEnv(body)
         end
         remove_named(inits, key)
         remove_named(cleanups, key)
+        remove_named(iquits, key)
         rawset(data, key, value)
       end
     end,
@@ -877,7 +1062,7 @@ function cont_env.withEnv(body)
   -- 按 AfterStep/BeforeStep 拓扑重排（无约束则保持定义序）
   order = resolve_step_order(order, constraints)
 
-  -- 快照：composed 固定为 body 结束时的步骤 / init / finally 序列
+  -- 快照：composed 固定为 body 结束时的步骤 / init / iquit / finally 序列
   local order_snap = {}
   local steps_snap = {}
   for i, name in ipairs(order) do
@@ -888,16 +1073,20 @@ function cont_env.withEnv(body)
   for i, item in ipairs(inits) do
     inits_snap[i] = { name = item.name, fn = item.fn }
   end
+  local iquits_snap = {}
+  for i, item in ipairs(iquits) do
+    iquits_snap[i] = { name = item.name, fn = item.fn }
+  end
   local cleanups_snap = {}
   for i, item in ipairs(cleanups) do
     cleanups_snap[i] = { name = item.name, fn = item.fn }
   end
 
   local composed
-  if #inits_snap == 0 and #cleanups_snap == 0 then
+  if #inits_snap == 0 and #iquits_snap == 0 and #cleanups_snap == 0 then
     composed = compose_steps(order_snap, steps_snap)
   else
-    composed = compose_lifecycle(order_snap, steps_snap, inits_snap, cleanups_snap)
+    composed = compose_lifecycle(order_snap, steps_snap, inits_snap, cleanups_snap, iquits_snap)
   end
 
   -- rawset 避免 pipe/compose 被当成新步骤
@@ -912,5 +1101,7 @@ end
 Cont.withEnv = cont_env.withEnv
 Cont.finally = cont_env.with_finally
 Cont.init_finally = cont_env.init_finally
+Cont.with_iquit = cont_env.with_iquit
+Cont.iquit_finally = cont_env.iquit_finally
 
 return cont_env

@@ -175,6 +175,20 @@ function GameSim:is_paused()
   return self._paused
 end
 
+--- 按 flow 挂起/恢复（≠ 全局 set_paused；游戏时间仍可推进）
+function GameSim:suspend_flow(flow)
+  if flow and type(flow.suspend) == "function" then
+    flow.suspend()
+  end
+end
+
+function GameSim:resume_flow(flow)
+  if flow and type(flow.resume) == "function" then
+    return flow.resume()
+  end
+  return nil
+end
+
 ------------------------------------------------------------
 -- 事件派发
 ------------------------------------------------------------

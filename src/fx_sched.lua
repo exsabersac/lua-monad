@@ -11,7 +11,9 @@
 -- wait_until 走 schedule_poll（FrameScheduler / GameSim）；无 poll 时用 schedule 轮询模拟；
 -- session 可异步完成（timer/poll 回调 resume + pump）。
 -- 截止时间：opts.deadline / opts.timeout，以及 with_timeout，向下传播到 fork 子任务；
--- 父 deadline 触发时递归 Stopped 未完成后代（finally 经 force_stop/abort）。
+-- 父 deadline 触发时递归 Stopped 未完成后代（iquit/finally 经 force_stop → Yielded.abort）。
+-- Coro.Aborted（fx.abort）：join / when_all / when_any 向 waiter 传播 Aborted（不算成功值）。
+-- flow:suspend() / flow:resume()：挂起本 flow 的 wait 兑现（timer/poll 回调推迟到 resume）。
 
 local Coro = require("coro")
 local Cont = require("cont")
@@ -22,7 +24,7 @@ local M = {}
 ------------------------------------------------------------
 -- 轻量追踪（默认关闭）
 -- opts.trace = function(ev) 优先于全局 tracer
--- ev.type: flow_start | yield | resume | fork | join | cancel | done | failed | stopped
+-- ev.type: flow_start | yield | resume | fork | join | cancel | done | failed | stopped | aborted
 ------------------------------------------------------------
 
 local _global_tracer = nil
@@ -246,9 +248,50 @@ local function mark_finished(task)
   task.parked = nil
 end
 
--- 经 with_finally.abort 停任务，保证 finally 执行
+-- 经 with_iquit/with_finally.abort 停任务，保证 iquit→finally 执行
 local function force_stop_task_answer(answer, reason)
   return Coro.force_stop(answer, reason or "cancelled")
+end
+
+-- Answer → 调度器用的终态标签
+local function answer_status(answer)
+  if Coro.isDone(answer) then
+    return "done"
+  elseif Coro.isAborted(answer) then
+    return "aborted"
+  elseif Coro.isStopped(answer) then
+    return "stopped"
+  elseif Coro.isFailed(answer) then
+    return "failed"
+  end
+  return nil
+end
+
+-- 向父/joiner 传播子任务的非成功终态（保留 Aborted vs Stopped）
+local function propagate_child_failure(child_answer)
+  if Coro.isFailed(child_answer) then
+    return Coro.Failed(child_answer.error)
+  elseif Coro.isAborted(child_answer) then
+    return Coro.Aborted(child_answer.reason or "aborted")
+  elseif Coro.isStopped(child_answer) then
+    return Coro.Stopped(child_answer.reason or "cancelled")
+  end
+  error("fx_sched: expected Failed/Aborted/Stopped to propagate")
+end
+
+-- flow:suspend 时推迟 timer/poll 兑现；resume 时按序执行
+local function when_flow_active(opts, fn)
+  local flow = opts and opts._flow
+  if flow and flow.suspended and not flow.done then
+    local q = flow._deferred
+    if q == nil then
+      q = {}
+      flow._deferred = q
+    end
+    q[#q + 1] = fn
+    return
+  end
+  fn()
 end
 
 -- 当前时钟：有 scheduler 用游戏时间，否则墙钟
@@ -459,6 +502,11 @@ settle_group = function(nursery, group, status, child)
     parent.fail_index = child.group_pos
     cancel_siblings(nursery, group, child.id)
     on_task_terminal(nursery, parent, "stopped")
+  elseif status == "aborted" then
+    parent.answer = Coro.Aborted(child.answer.reason or "aborted")
+    parent.fail_index = child.group_pos
+    cancel_siblings(nursery, group, child.id)
+    on_task_terminal(nursery, parent, "aborted")
   end
 end
 
@@ -505,6 +553,15 @@ on_task_terminal = function(nursery, task, status)
           if not group.settled then
             for _, cid in ipairs(group.child_ids) do
               local c = nursery.tasks[cid]
+              if c and Coro.isAborted(c.answer) then
+                settle_group(nursery, group, "aborted", c)
+                break
+              end
+            end
+          end
+          if not group.settled then
+            for _, cid in ipairs(group.child_ids) do
+              local c = nursery.tasks[cid]
               if c and Coro.isStopped(c.answer) then
                 settle_group(nursery, group, "stopped", c)
                 break
@@ -522,10 +579,10 @@ on_task_terminal = function(nursery, task, status)
           end
         end
       end
-    elseif status == "stopped" then
+    elseif status == "stopped" or status == "aborted" then
       if group.mode == "all" or group.mode == "timeout" then
-        -- timeout：body Stopped 立刻传播（并取消 timer）
-        settle_group(nursery, group, "stopped", task)
+        -- timeout：body Stopped/Aborted 立刻传播（并取消 timer）
+        settle_group(nursery, group, status, task)
       else
         group.done_count = group.done_count + 1
         if group.done_count >= group.n then
@@ -534,6 +591,15 @@ on_task_terminal = function(nursery, task, status)
             if c and Coro.isFailed(c.answer) then
               settle_group(nursery, group, "failed", c)
               break
+            end
+          end
+          if not group.settled then
+            for _, cid in ipairs(group.child_ids) do
+              local c = nursery.tasks[cid]
+              if c and Coro.isAborted(c.answer) then
+                settle_group(nursery, group, "aborted", c)
+                break
+              end
             end
           end
           if not group.settled then
@@ -574,6 +640,10 @@ try_complete_joins = function(nursery, finished_task, status)
           mark_finished(j)
           -- join 失败也要通知再上层 joiners（若有）
           on_task_terminal(nursery, j, "failed")
+        elseif status == "aborted" then
+          j.answer = Coro.Aborted(finished_task.answer.reason)
+          mark_finished(j)
+          on_task_terminal(nursery, j, "aborted")
         elseif status == "stopped" then
           j.answer = Coro.Stopped(finished_task.answer.reason)
           mark_finished(j)
@@ -593,6 +663,11 @@ try_complete_joins = function(nursery, finished_task, status)
             j.answer = Coro.Failed(finished_task.answer.error)
             mark_finished(j)
             on_task_terminal(nursery, j, "failed")
+          elseif status == "aborted" then
+            j.parked = nil
+            j.answer = Coro.Aborted(finished_task.answer.reason)
+            mark_finished(j)
+            on_task_terminal(nursery, j, "aborted")
           elseif status == "stopped" then
             j.parked = nil
             j.answer = Coro.Stopped(finished_task.answer.reason)
@@ -739,22 +814,24 @@ drive_until_block = function(nursery, task)
       if scheduler ~= nil then
         local flag = { cancelled = false }
         local handle = scheduler.schedule(secs, function()
-          if flag.cancelled then
-            return
-          end
-          if task.finished or not task.waiting then
-            return
-          end
-          task.waiting = false
-          task.timer_handle = nil
-          task._timer_flag = nil
-          if opts.verbose_wait then
-            print(string.format("[fx.session] task#%d wait done (scheduler)", task.id))
-          end
-          task.answer = Coro.resume(task.answer, true)
-          if type(opts._pump) == "function" then
-            opts._pump()
-          end
+          when_flow_active(opts, function()
+            if flag.cancelled then
+              return
+            end
+            if task.finished or not task.waiting then
+              return
+            end
+            task.waiting = false
+            task.timer_handle = nil
+            task._timer_flag = nil
+            if opts.verbose_wait then
+              print(string.format("[fx.session] task#%d wait done (scheduler)", task.id))
+            end
+            task.answer = Coro.resume(task.answer, true)
+            if type(opts._pump) == "function" then
+              opts._pump()
+            end
+          end)
         end)
         task.timer_handle = handle
         task._timer_flag = flag
@@ -845,6 +922,9 @@ drive_until_block = function(nursery, task)
         elseif Coro.isFailed(child.answer) then
           task.answer = Coro.Failed(child.answer.error)
           return "failed"
+        elseif Coro.isAborted(child.answer) then
+          task.answer = Coro.Aborted(child.answer.reason)
+          return "aborted"
         elseif Coro.isStopped(child.answer) then
           task.answer = Coro.Stopped(child.answer.reason)
           return "stopped"
@@ -871,7 +951,7 @@ drive_until_block = function(nursery, task)
         local targets = {}
         local values = {}
         local done_n = 0
-        local fail_now, stop_now
+        local fail_now, abort_now, stop_now
         for i, h in ipairs(handles) do
           assert(type(h) == "table" and type(h.id) == "number",
             "fx_sched: join_handles handle must be {id=number}")
@@ -881,6 +961,9 @@ drive_until_block = function(nursery, task)
           if child.finished then
             if Coro.isFailed(child.answer) then
               fail_now = child
+              break
+            elseif Coro.isAborted(child.answer) then
+              abort_now = child
               break
             elseif Coro.isStopped(child.answer) then
               stop_now = child
@@ -895,6 +978,10 @@ drive_until_block = function(nursery, task)
         if fail_now then
           task.answer = Coro.Failed(fail_now.answer.error)
           return "failed"
+        end
+        if abort_now then
+          task.answer = Coro.Aborted(abort_now.answer.reason)
+          return "aborted"
         end
         if stop_now then
           task.answer = Coro.Stopped(stop_now.answer.reason)
@@ -948,24 +1035,26 @@ drive_until_block = function(nursery, task)
         local flag = { cancelled = false }
         local ev_handle
         ev_handle = listen(req.name, req.filter, function(payload)
-          if flag.cancelled then
-            return
-          end
-          if task.finished or not task.waiting then
-            return
-          end
-          task.waiting = false
-          task.waiting_event = false
-          task.event_handle = nil
-          task._event_flag = nil
-          task._unlisten = nil
-          if payload == nil then
-            payload = true
-          end
-          task.answer = Coro.resume(task.answer, payload)
-          if type(opts._pump) == "function" then
-            opts._pump()
-          end
+          when_flow_active(opts, function()
+            if flag.cancelled then
+              return
+            end
+            if task.finished or not task.waiting then
+              return
+            end
+            task.waiting = false
+            task.waiting_event = false
+            task.event_handle = nil
+            task._event_flag = nil
+            task._unlisten = nil
+            if payload == nil then
+              payload = true
+            end
+            task.answer = Coro.resume(task.answer, payload)
+            if type(opts._pump) == "function" then
+              opts._pump()
+            end
+          end)
         end)
         task.event_handle = ev_handle
         task._event_flag = flag
@@ -1013,35 +1102,39 @@ drive_until_block = function(nursery, task)
       local scheduler = opts.scheduler
 
       local function resume_until(result)
-        if task.finished or not task.waiting then
-          return
-        end
-        task.waiting = false
-        task.timer_handle = nil
-        task._timer_flag = nil
-        task._wait_until_pred = nil
-        task._wait_until_interval = nil
-        task._wait_until_next = nil
-        emit_trace(opts, {
-          type = "resume",
-          task_id = task.id,
-          kind = "wait_until",
-        })
-        task.answer = Coro.resume(task.answer, result)
-        if type(opts._pump) == "function" then
-          opts._pump()
-        end
+        when_flow_active(opts, function()
+          if task.finished or not task.waiting then
+            return
+          end
+          task.waiting = false
+          task.timer_handle = nil
+          task._timer_flag = nil
+          task._wait_until_pred = nil
+          task._wait_until_interval = nil
+          task._wait_until_next = nil
+          emit_trace(opts, {
+            type = "resume",
+            task_id = task.id,
+            kind = "wait_until",
+          })
+          task.answer = Coro.resume(task.answer, result)
+          if type(opts._pump) == "function" then
+            opts._pump()
+          end
+        end)
       end
 
       local function fail_until(err)
-        if task.finished then
-          return
-        end
-        clear_task_waits(task)
-        task.answer = Coro.Failed(err)
-        if type(opts._pump) == "function" then
-          opts._pump()
-        end
+        when_flow_active(opts, function()
+          if task.finished then
+            return
+          end
+          clear_task_waits(task)
+          task.answer = Coro.Failed(err)
+          if type(opts._pump) == "function" then
+            opts._pump()
+          end
+        end)
       end
 
       -- 立刻试一次（同帧可完成）
@@ -1186,23 +1279,25 @@ drive_until_block = function(nursery, task)
         task.waiting = true
         local kind_snapshot = req.kind
         handler(req, function(next_input)
-          if flag.cancelled then
-            return
-          end
-          if task.finished or not task.waiting then
-            return
-          end
-          task.waiting = false
-          task._timer_flag = nil
-          emit_trace(opts, {
-            type = "resume",
-            task_id = task.id,
-            kind = kind_snapshot,
-          })
-          task.answer = Coro.resume(task.answer, next_input)
-          if type(opts._pump) == "function" then
-            opts._pump()
-          end
+          when_flow_active(opts, function()
+            if flag.cancelled then
+              return
+            end
+            if task.finished or not task.waiting then
+              return
+            end
+            task.waiting = false
+            task._timer_flag = nil
+            emit_trace(opts, {
+              type = "resume",
+              task_id = task.id,
+              kind = kind_snapshot,
+            })
+            task.answer = Coro.resume(task.answer, next_input)
+            if type(opts._pump) == "function" then
+              opts._pump()
+            end
+          end)
         end)
         return "wait"
       else
@@ -1219,6 +1314,8 @@ drive_until_block = function(nursery, task)
 
   if Coro.isDone(task.answer) then
     return "done"
+  elseif Coro.isAborted(task.answer) then
+    return "aborted"
   elseif Coro.isStopped(task.answer) then
     return "stopped"
   elseif Coro.isFailed(task.answer) then
@@ -1278,7 +1375,45 @@ function M.start_session(ma, handlers, opts)
     result = nil,
     nursery = nursery,
     root = root,
+    suspended = false,
+    _deferred = {},
   }
+  opts._flow = flow
+
+  --- 挂起本 flow：已登记的 wait/timer/poll 到期不 resume，推迟到 resume()
+  function flow.suspend()
+    if flow.done then
+      return
+    end
+    flow.suspended = true
+  end
+
+  --- 恢复：兑现挂起期间到期的回调，再 pump
+  function flow.resume()
+    if flow.done then
+      return flow.result
+    end
+    if not flow.suspended then
+      return nil
+    end
+    flow.suspended = false
+    local deferred = flow._deferred or {}
+    flow._deferred = {}
+    for i = 1, #deferred do
+      deferred[i]()
+      if flow.done then
+        return flow.result
+      end
+    end
+    if type(opts._pump) == "function" then
+      opts._pump()
+    end
+    return flow.result
+  end
+
+  function flow.is_suspended()
+    return flow.suspended == true
+  end
 
   emit_trace(opts, {
     type = "flow_start",
@@ -1305,6 +1440,12 @@ function M.start_session(ma, handlers, opts)
     local a = root.answer
     if Coro.isDone(a) then
       return { ok = true, value = a.value }
+    elseif Coro.isAborted(a) then
+      local r = { ok = false, aborted = true, reason = a.reason }
+      if root.fail_index then
+        r.index = root.fail_index
+      end
+      return r
     elseif Coro.isStopped(a) then
       local r = { ok = false, stopped = true, reason = a.reason }
       if root.fail_index then
@@ -1328,6 +1469,8 @@ function M.start_session(ma, handlers, opts)
     local r = flow.result
     if r.ok then
       emit_trace(opts, { type = "done", root_id = root.id, value = r.value })
+    elseif r.aborted then
+      emit_trace(opts, { type = "aborted", root_id = root.id, reason = r.reason })
     elseif r.stopped then
       emit_trace(opts, { type = "stopped", root_id = root.id, reason = r.reason })
     elseif r.failed then
@@ -1431,7 +1574,7 @@ function M.start_session(ma, handlers, opts)
           if task and is_runnable(task) then
             local st = drive_until_block(nursery, task)
             progressed = true
-            if st == "done" or st == "stopped" or st == "failed" then
+            if st == "done" or st == "stopped" or st == "aborted" or st == "failed" then
               on_task_terminal(nursery, task, st)
             end
           end
@@ -1444,6 +1587,10 @@ function M.start_session(ma, handlers, opts)
     end
 
     while not flow.done do
+      if flow.suspended then
+        pumping = false
+        return nil
+      end
       if is_cancelled(opts.cancel) then
         clear_deadline_watchdog()
         emit_trace(opts, { type = "cancel", root_id = root.id, reason = "cancelled" })
@@ -1535,7 +1682,7 @@ function M.start_session(ma, handlers, opts)
           end
           task.answer = Coro.resume(task.answer, true)
           local st = drive_until_block(nursery, task)
-          if st == "done" or st == "stopped" or st == "failed" then
+          if st == "done" or st == "stopped" or st == "aborted" or st == "failed" then
             on_task_terminal(nursery, task, st)
           end
         end
@@ -1555,7 +1702,7 @@ function M.start_session(ma, handlers, opts)
               task._wait_until_next = nil
               task.answer = Coro.resume(task.answer, result)
               local st = drive_until_block(nursery, task)
-              if st == "done" or st == "stopped" or st == "failed" then
+              if st == "done" or st == "stopped" or st == "aborted" or st == "failed" then
                 on_task_terminal(nursery, task, st)
               end
             else
