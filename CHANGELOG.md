@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.11-eng — 2026-09-21
+
+- **性能基准扩展**（`tools/bench_cont_fx.lua`）
+  - 新增用例：`fx.lane+join`、`fx.proxy_join`、`fx.chan`（VirtualClock / GameSim）、`fx.supervise`（fail→ok）、`fx.wait_until` 平凡 pred、`when_all` of waits
+  - 保留 Cont / `>>` / map / chain / `fx.seq` / session wait(0)
+  - CLI：`--json`（machine-readable）、`--filter NAME`；重用例内部 N clamp
+- **周边工具**
+  - 新增 `tools/flow_doctor.lua`：未知 kind → Failed、wait 无 scheduler WARN、打印 `STANDARD_KINDS`；CI 模式（`--ci` / 帮助中的同类 flag）
+  - `tools/trace_dump.lua`：可选 `--lane` / `--chan` 演示相关 trace 事件
+  - `tools/README.md` 全面更新
+- 文档：[`性能与工具.md`](docs/性能与工具.md) 刷新版本与新表；README 工具入口
+
 ## 0.2.10-eng — 2026-09-21
 
 - **轻量 flow/lane proxy（≈ tabMachine tabProxy）**

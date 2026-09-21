@@ -4,6 +4,8 @@
 --   lua5.3 tools/trace_dump.lua
 --   lua5.3 tools/trace_dump.lua --json
 --   lua5.3 tools/trace_dump.lua --wait 0.05
+--   lua5.3 tools/trace_dump.lua --lane
+--   lua5.3 tools/trace_dump.lua --chan
 --   lua5.3 tools/trace_dump.lua --help
 -- 详见 tools/README.md
 
@@ -23,16 +25,21 @@ local function usage()
 选项:
   --json          每行一个 JSON 对象（字段排序）
   --wait <sec>    wait 秒数（默认 0.02）；亦支持 --wait=0.05
+  --lane          额外演示命名 lane + lane_join（trace 含 lane=）
+  --chan          额外演示 chan send/recv（trace 含 kind=chan_*）
   --help, -h      本说明
 
 说明:
   opts.trace 须为 function（传 true 会被忽略）。
   也可用 Sched.set_tracer / fx.set_tracer 设全局 tracer。
+  lane / chan 事件已由 session 发出（fork/join/yield/resume）；本工具只是 dump。
 ]])
 end
 
 local json_mode = false
 local wait_s = 0.02
+local demo_lane = false
+local demo_chan = false
 local i = 1
 local args = arg or {}
 while i <= #args do
@@ -42,6 +49,10 @@ while i <= #args do
     os.exit(0)
   elseif a == "--json" then
     json_mode = true
+  elseif a == "--lane" then
+    demo_lane = true
+  elseif a == "--chan" then
+    demo_chan = true
   elseif a:sub(1, 7) == "--wait=" then
     wait_s = tonumber(a:sub(8)) or wait_s
   elseif a == "--wait" then
@@ -68,6 +79,14 @@ local function dump_ev(ev)
         vs = tostring(v)
       elseif type(v) == "nil" then
         vs = "null"
+      elseif type(v) == "table" then
+        -- 压缩嵌套表（error 等）
+        local bits = {}
+        for kk, vv in pairs(v) do
+          bits[#bits + 1] = tostring(kk) .. "=" .. tostring(vv)
+        end
+        table.sort(bits)
+        vs = '"' .. esc("{" .. table.concat(bits, ",") .. "}") .. '"'
       else
         vs = '"' .. esc(v) .. '"'
       end
@@ -80,7 +99,16 @@ local function dump_ev(ev)
     local rest = {}
     for k, v in pairs(ev) do
       if k ~= "type" then
-        rest[#rest + 1] = k .. "=" .. tostring(v)
+        if type(v) == "table" then
+          local bits = {}
+          for kk, vv in pairs(v) do
+            bits[#bits + 1] = tostring(kk) .. "=" .. tostring(vv)
+          end
+          table.sort(bits)
+          rest[#rest + 1] = k .. "={" .. table.concat(bits, ",") .. "}"
+        else
+          rest[#rest + 1] = k .. "=" .. tostring(v)
+        end
       end
     end
     table.sort(rest)
@@ -95,10 +123,32 @@ local function on_trace(ev)
 end
 
 local clock = Scheduler.VirtualClock()
-local ma = fx.seq({
+
+local steps = {
   fx.wait(wait_s),
   Cont.unit("ok"),
-})
+}
+
+if demo_lane then
+  steps[#steps + 1] = fx.lane("demo", Cont.unit(42)) >> function(_)
+    return fx.lane_join("demo")
+  end
+end
+
+if demo_chan then
+  steps[#steps + 1] = (function()
+    local ch = fx.chan()
+    return fx.fork(fx.send(ch, "ping")) >> function(h)
+      return fx.recv(ch) >> function(v)
+        return fx.join(h) >> function()
+          return Cont.unit(v)
+        end
+      end
+    end
+  end)()
+end
+
+local ma = fx.seq(steps)
 -- opts.trace 须为 function（true 会被忽略）；亦可用 Sched.set_tracer
 local flow = Sched.start_session(ma, {}, { scheduler = clock, trace = on_trace })
 clock.advance(wait_s + 0.001)
