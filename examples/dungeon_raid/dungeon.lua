@@ -191,17 +191,26 @@ local function drive_with_pause(world, flow, opts)
       world.flags.ready_for_pause = false
       did_pause = true
       local t_freeze = sim:now()
-      world.log("【pause】暂停游戏 @%.2f（验证 wait 不推进）", t_freeze)
+      world.log("【pause】暂停游戏 @%.2f（验证：暂停中 tick 不推进游戏时间）", t_freeze)
       sim:set_paused(true)
-      for _ = 1, 8 do
+      local pause_ticks = 8
+      for _ = 1, pause_ticks do
         sim:tick(dt)
       end
       local still = sim:now()
       world.checks.pause_deferred = (math.abs(still - t_freeze) < 1e-9) and (not flow.done)
-      world.log("【pause】暂停期间 now=%.2f deferred=%s",
-        still, tostring(world.checks.pause_deferred))
+      -- 多行日志的 [模拟 Xs] 相同是预期：时钟冻结，不是打印错误
+      world.log(
+        "【pause】期间已 tick %d×%.2fs（若未暂停本应到 %.2f），游戏时间仍为 %.2f；旅途 wait 仍挂起=%s",
+        pause_ticks,
+        dt,
+        t_freeze + pause_ticks * dt,
+        still,
+        tostring(not flow.done)
+      )
       sim:set_paused(false)
-      world.log("【pause】恢复")
+      world.log("【pause】恢复 @%.2f（剩余旅途 wait 仍约 0.80s，结束后应到 ≈%.2f）",
+        still, still + 0.8)
     end
 
     sim:tick(dt)
