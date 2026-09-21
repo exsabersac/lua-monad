@@ -159,7 +159,9 @@
 | 函数 | 说明 |
 |------|------|
 | `unit(a)` / `Cont(a)` | `λk. k(a)` |
-| `bind(ma, f)` | `λk. ma(λa. f(a)(k))` |
+| `bind(ma, f)` | `λk. ma(λa. f(a)(k))`；Cont 专用热路径（少一层 adapter；已 wrap 则直调 `_fn`） |
+| `chain(ma, mb)` | 丢弃左值 ≡ `ma .. mb`；比手写 `>> (_→mb)` 更轻；`fx.seq` 用此 |
+| `map` / `then_` / `fmap` | 直接改续延（无 `bind+unit` 双代理）；纯变换优先于此而非 `>> unit` |
 | `runCont(ma, k)` | 以续延 `k` 执行 → `r` |
 | `evalCont(ma)` | `runCont(ma, id)`；答案类型需与值可对齐 |
 | `mapCont(f, ma)` | `(r→r) → Cont r a → Cont r a`；`λk. f(c(k))`，改造**答案** |
@@ -251,7 +253,9 @@ end
 | `fx.connect(host, opts?)` | yield `{ kind="connect", host, opts? }`；resume 值为连接结果表 |
 | `fx.click(target)` | yield `{ kind="click", target }`；resume 值为点击结果表 |
 | `fx.stop(reason?)` | → `Coro.stop`；管道中止为 `Stopped` |
+| `fx.abort(reason?)` | → `Coro.abort`；管道中止为 `Aborted`（join 不算成功） |
 | `fx.fail(err)` / `fx.throw` | → `Coro.fail`；管道失败为 `Failed` |
+| `fx.seq(mas)` | 左→右 `Cont.chain` 串联，返回最后值；空 → `unit(nil)` |
 | `fx.when_all(mas)` / `fx.join_all` | Cont：yield `{kind="when_all",tasks}`；resume → values 数组（≈ `Task.WhenAll`） |
 | `fx.when_any(mas)` / `fx.join_any` | Cont：yield `{kind="when_any",tasks}`；resume → `{value,index}`（≈ `Task.WhenAny`） |
 | `fx.fork(ma)` / `fx.spawn` | Cont：yield `{kind="fork",task}`；resume → handle `{id=number}`（≈ `Task.Run`） |

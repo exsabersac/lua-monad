@@ -1,6 +1,6 @@
 # Lua Monad · CPS 续延
 
-**版本 `0.2.3-eng`**（工程可用：… / wait_until / **abort·iquit·seq·suspend**；对照 [tabMachine对照](docs/tabMachine对照.md)；见 [CHANGELOG](CHANGELOG.md) / [工程可用验收](docs/工程可用验收.md)）。
+**版本 `0.2.4-eng`**（工程可用：… / wait_until / abort·iquit·seq·suspend / **Cont 热路径·工具**；对照 [tabMachine对照](docs/tabMachine对照.md) / [性能与工具](docs/性能与工具.md)；见 [CHANGELOG](CHANGELOG.md) / [工程可用验收](docs/工程可用验收.md)）。
 
 本仓库用纯 Lua 模拟 Haskell 风格的 Monad，**主线是 Cont（续延）与 CPS**：
 
@@ -20,7 +20,8 @@
 5. [工程对接与后续](docs/工程对接与后续.md) — 游戏时间 Scheduler、**GameSim**、**地牢突袭**、P0–P2；[工程可用验收](docs/工程可用验收.md)  
 6. [Unity 对接](docs/Unity对接.md) — Unity + Lua 5.3（xLua/tolua/slua）、scaled 游戏时间、主线程桥接、[`host/unity/`](host/unity/) 模板  
 7. [Lua 5.3 兼容性](docs/Lua53兼容性.md) — `__shr`、避免 5.4-only、`lua5.3 tests/run.lua`  
-8. [设计说明](docs/设计说明.md) · [API 参考](docs/API.md)
+8. [性能与工具](docs/性能与工具.md) — Cont 热路径、bench / trace；[`tools/README.md`](tools/README.md)  
+9. [设计说明](docs/设计说明.md) · [API 参考](docs/API.md)
 
 需要 **Lua 5.3+**（Unity / xLua / tolua / slua 多为 5.3；已在 5.3.6 验证）。在仓库根目录执行示例（脚本已设置 `package.path`）：
 

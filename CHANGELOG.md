@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.4-eng — 2026-09-21
+
+- **Cont 热路径**：专用 `bind`（少 adapter；已 wrap 直调 `_fn`）；新增 **`Cont.chain`**；`..` 走 chain；**`map`/`then_`/`fmap`** 避免 bind+unit 双代理
+- **`fx.seq`** 改为 `Cont.chain` 串联
+- 工具：`tools/README.md`；`bench_cont_fx.lua` 增 map/chain/seq·eval 与 ΔKB；`trace_dump.lua` 统一参数与 `--help`
+- 文档：[`docs/性能与工具.md`](docs/性能与工具.md)（前后粗测）；验收 / API / tabMachine 对照同步
+
 ## 0.2.3-eng — 2026-09-21
 
 - **abort vs stop**：`fx.abort` / `Coro.Aborted`；`fx.stop` 仍为 Stopped；cancel/`force_stop` 仍 Stopped

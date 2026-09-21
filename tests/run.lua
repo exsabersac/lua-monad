@@ -215,6 +215,11 @@ do
   )
   assert_eq(r3, 42, "Cont .. sequence discard left")
   assert_eq(Cont.runCont(Cont(9), function(x) return x end), 9, "Cont(x) module call")
+
+  -- Cont.chain / map 热路径（与 .. / fmap 同语义）
+  assert_eq(Cont.evalCont(Cont.chain(Cont.unit(1), Cont.unit(99))), 99, "Cont.chain")
+  assert_eq(Cont.evalCont(Cont.map(Cont.unit(3), function(x) return x * 4 end)), 12, "Cont.map")
+  assert_eq(Cont.evalCont(Cont.then_(Cont.unit(5), function(x) return x + 1 end)), 6, "Cont.then_")
 end
 
 ------------------------------------------------------------

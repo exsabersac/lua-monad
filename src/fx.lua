@@ -135,7 +135,8 @@ fx.throw = fx.fail -- 别名：与 Cont.throw 对照时可用 fx.throw 表示 Co
 ------------------------------------------------------------
 
 -- seq : { Cont Answer a, ... } → Cont Answer last
--- 左到右用 >> 串联（忽略中间值，保留最后 Cont 的值）；空数组 → Cont.unit(nil)
+-- 左到右串联（忽略中间值，保留最后 Cont 的值）；空数组 → Cont.unit(nil)
+-- 使用 Cont.chain（≡ ma .. mb），避免每步 `>> function(_) return next end` 的额外闭包
 function fx.seq(mas)
   assert(type(mas) == "table", "fx.seq: expected array of Cont Answer")
   local n = #mas
@@ -144,10 +145,7 @@ function fx.seq(mas)
   end
   local m = mas[1]
   for i = 2, n do
-    local next_m = mas[i]
-    m = m >> function(_)
-      return next_m
-    end
+    m = Cont.chain(m, mas[i])
   end
   return m
 end

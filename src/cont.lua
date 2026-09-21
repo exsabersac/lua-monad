@@ -34,6 +34,72 @@ local M = monad.makeMonad({
   bind = bind,
 })
 
+-- ---------------------------------------------------------------------------
+-- 热路径：覆盖 bind / 增加 chain，减少每步代理与闭包
+-- ---------------------------------------------------------------------------
+-- 默认 makeMonad.bind 在「构造时」多包一层 adapter（unwrap(f(a))），再 raw_bind，
+-- 再 wrap。Cont 上改为：一次 wrap，运行时若 f 已返回 Cont 代理则直接调 _fn(k)。
+-- Cont.chain(ma, mb) ≡ ma >> (_ -> mb) / ma .. mb，无用户闭包、无 bind adapter。
+local cont_mt = getmetatable(M.unit(nil))
+
+local function cont_fn(ma)
+  if type(ma) == "table" and getmetatable(ma) == cont_mt then
+    return ma._fn
+  end
+  return M.unwrap(ma)
+end
+
+function M.bind(ma, f)
+  local c = cont_fn(ma)
+  return setmetatable({
+    _fn = function(k)
+      return c(function(a)
+        local mb = f(a)
+        if type(mb) == "table" and getmetatable(mb) == cont_mt then
+          return mb._fn(k)
+        end
+        if type(mb) == "function" then
+          return mb(k)
+        end
+        return M.unwrap(mb)(k)
+      end)
+    end,
+  }, cont_mt)
+end
+
+-- chain : Cont r a → Cont r b → Cont r b
+-- 丢弃左边值，右接到同一续延 k（比 `ma .. mb` 的默认 bind 实现更轻）
+function M.chain(ma, mb)
+  local c = cont_fn(ma)
+  local d = cont_fn(mb)
+  return setmetatable({
+    _fn = function(k)
+      return c(function(_)
+        return d(k)
+      end)
+    end,
+  }, cont_mt)
+end
+
+-- Cont 的 .. 走 chain（其它 monad 仍用 makeMonad 默认 __concat）
+cont_mt.__concat = function(ma, mb)
+  return M.chain(ma, mb)
+end
+
+-- map / then_ / fmap：直接改续延，避免 bind+unit 双代理
+function M.then_(ma, f)
+  local c = cont_fn(ma)
+  return setmetatable({
+    _fn = function(k)
+      return c(function(a)
+        return k(f(a))
+      end)
+    end,
+  }, cont_mt)
+end
+M.fmap = M.then_
+M.map = M.then_
+
 -- callCC : ((a → Cont r b) → Cont r a) → Cont r a
 --
 -- 经典「以当前续延为逃逸出口」：
